@@ -77,6 +77,7 @@ def search_kabum_selenium(driver, product_name):
         # URL de busca do Kabum
         search_query = urllib.parse.quote(product_name)
         search_url = f"https://www.kabum.com.br/busca?query={search_query}"
+        print(f"    URL de busca: {search_url}")
         
         driver.get(search_url)
         
@@ -175,6 +176,7 @@ def search_pichau_selenium(driver, product_name):
         # URL de busca da Pichau
         search_query = urllib.parse.quote(product_name)
         search_url = f"https://www.pichau.com.br/buscar?q={search_query}"
+        print(f"    URL de buscaPPPPP: {search_url}")
         
         driver.get(search_url)
         
