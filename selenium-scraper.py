@@ -12,10 +12,8 @@ from selenium.webdriver.common.action_chains import ActionChains
 
 # Produtos para teste (use produtos reais que você sabe que existem)
 produtos_teste = [
-    "RTX 4060",
-    "Ryzen 5 5600X", 
-    "WD Blue 1TB",
-    "Corsair 16GB DDR4",
+    "RX 7800 xt",
+    "Processador Intel i5 12400F", 
     "ASUS B450M"
 ]
 
@@ -133,7 +131,7 @@ class HumanBehaviorScraper:
             pass
     
     def clean_price_text(self, text):
-        """Limpa texto de preço de forma mais robusta"""
+        """Limpa texto de preço de forma mais robusta para formato brasileiro"""
         if not text:
             return 0.0
             
@@ -146,21 +144,56 @@ class HumanBehaviorScraper:
             if not price_clean:
                 return 0.0
             
-            # Lógica para diferentes formatos brasileiros
+            # Se não há vírgula nem ponto, é um número inteiro
+            if ',' not in price_clean and '.' not in price_clean:
+                result = float(price_clean)
+                print(f"      ✅ Preço limpo (inteiro): {result:.2f}")
+                
+                # Validar se o preço é razoável (acima de R$ 20,00)
+                if result < 20.0:
+                    print(f"      ⚠️ Preço muito baixo (R$ {result:.2f}), considerando inválido")
+                    return 0.0
+                    
+                return result
+            
+            # Lógica para formatos brasileiros
+            # Se há vírgula e ponto, provavelmente é formato brasileiro: 1.234,56
             if ',' in price_clean and '.' in price_clean:
-                # Formato: 1.234,56 (brasileiro)
+                # Verifica se a vírgula está depois do ponto (formato brasileiro)
                 if price_clean.rindex(',') > price_clean.rindex('.'):
+                    # Formato: 1.234,56 (brasileiro) - remove pontos, substitui vírgula por ponto
                     price_clean = price_clean.replace('.', '').replace(',', '.')
-                # Formato: 1,234.56 (americano - raro no Brasil)
                 else:
+                    # Formato: 1,234.56 (americano) - remove vírgulas
                     price_clean = price_clean.replace(',', '')
             elif ',' in price_clean:
-                # Formato: 1234,56
-                price_clean = price_clean.replace(',', '.')
-            # Se só tem ponto, assume formato: 1234.56
+                # Se só tem vírgula, verifica se é decimal ou milhar
+                parts = price_clean.split(',')
+                if len(parts) == 2 and len(parts[1]) == 2:
+                    # Provavelmente formato brasileiro: 1234,56
+                    price_clean = price_clean.replace(',', '.')
+                else:
+                    # Provavelmente formato europeu: 1,234 - remove vírgulas
+                    price_clean = price_clean.replace(',', '')
+            # Se só tem ponto, verifica se é decimal ou milhar
+            elif '.' in price_clean:
+                parts = price_clean.split('.')
+                # Se a parte depois do ponto tem 2 dígitos, pode ser decimal
+                if len(parts) > 1 and len(parts[-1]) == 2:
+                    # Provavelmente formato americano: 1234.56 - já está correto
+                    pass
+                else:
+                    # Provavelmente formato brasileiro: 1.234 - remove pontos
+                    price_clean = price_clean.replace('.', '')
             
             result = float(price_clean)
             print(f"      ✅ Preço limpo: {result:.2f}")
+            
+            # Validar se o preço é razoável (acima de R$ 20,00)
+            if result < 20.0:
+                print(f"      ⚠️ Preço muito baixo (R$ {result:.2f}), considerando inválido")
+                return 0.0
+                
             return result
             
         except (ValueError, AttributeError) as e:
@@ -220,37 +253,8 @@ class HumanBehaviorScraper:
         except Exception as e:
             print(f"      ⚠️ Não foi possível fechar popups: {e}")
     
-    def check_maintenance_page(self):
-        """Verifica se a página está em modo de manutenção"""
-        try:
-            # Verificar por elementos que indicam manutenção
-            maintenance_indicators = [
-                "body.maintenance",
-                ".maintenance-page",
-                "#maintenance",
-                "h1:contains('Manutenção')",
-                "h1:contains('manutenção')",
-                "p:contains('estamos em manutenção')",
-                "div:contains('volte em breve')"
-            ]
-            
-            page_text = self.driver.page_source.lower()
-            if any(word in page_text for word in ["manutenção", "maintenance", "temporariamente", "em breve"]):
-                return True
-                
-            for selector in maintenance_indicators:
-                try:
-                    if self.driver.find_element(By.CSS_SELECTOR, selector):
-                        return True
-                except:
-                    continue
-                    
-            return False
-        except:
-            return False
-    
     def test_kabum_search(self, produto):
-        """Teste específico para Kabum"""
+        """Teste específico para Kabum - encontra o produto mais barato"""
         print(f"\n🟦 TESTANDO KABUM: '{produto}'")
         print("=" * 50)
         
@@ -266,9 +270,9 @@ class HumanBehaviorScraper:
             # 2. Encontrar campo de busca
             print("🔍 Procurando campo de busca...")
             search_selectors = [
+                "input[placeholder*='Busque']",  # Primeiro o seletor que funcionou nos logs
                 "#input-busca",
                 "input[data-testid='input-busca']",
-                "input[placeholder*='Busque']",
                 "input[placeholder*='buscar']", 
                 ".sc-fqkvVR input",
                 "[data-cy='search-input']",
@@ -301,69 +305,138 @@ class HumanBehaviorScraper:
             # Fazer scroll para garantir que produtos carregaram
             self.scroll_randomly()
             
-            # 6. Procurar primeiro produto
+            # 6. Procurar todos os produtos na página
             print("🎯 Procurando produtos...")
-            name_selectors = [
-                ".nameCard",
-                "span.nameCard",
-                "[data-testid='product-name']",
-                ".sc-dcJsrY",
-                ".productName",
-                "a.productLink span",
-                ".sc-kpDqfm",
-                "h2.sc-dcJsrY"
+            
+            # Primeiro, encontrar todos os produtos na página
+            product_container_selectors = [
+                ".productCard",
+                "[data-testid='product-card']",
+                ".sc-iCoHVE",
+                ".sc-dkrFOg"
             ]
             
-            name_element = self.try_find_element_safe(name_selectors, timeout=8)
+            product_containers = []
+            for selector in product_container_selectors:
+                try:
+                    containers = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                    if containers:
+                        product_containers = containers
+                        print(f"✅ Encontrados {len(product_containers)} produtos")
+                        break
+                except:
+                    continue
             
-            if not name_element:
+            if not product_containers:
                 print("❌ Nenhum produto encontrado")
                 return None
             
-            product_name = name_element.text.strip()
-            print(f"📦 Produto encontrado: {product_name}")
+            # 7. Coletar todos os produtos válidos com seus preços
+            print("🔍 Coletando produtos e preços...")
+            valid_products = []
             
-            # 7. Procurar preço
-            print("💰 Procurando preço...")
-            price_selectors = [
-                ".priceCard",
-                "span.priceCard", 
-                "[data-testid='price']",
-                ".finalPrice",
-                ".sc-dcJsrY.fkuRgL",
-                ".price",
-                ".priceMain",
-                ".bestPrice",
-                ".sc-dlfnbm"
-            ]
+            for container in product_containers:
+                try:
+                    # Obter o nome do produto
+                    name_selectors = [
+                        ".nameCard",
+                        "span.nameCard",
+                        "[data-testid='product-name']",
+                        ".sc-dcJsrY",
+                        ".productName",
+                        "a.productLink span",
+                        ".sc-kpDqfm",
+                        "h2.sc-dcJsrY"
+                    ]
+                    
+                    name_element = None
+                    for selector in name_selectors:
+                        try:
+                            name_element = container.find_element(By.CSS_SELECTOR, selector)
+                            if name_element:
+                                break
+                        except:
+                            continue
+                    
+                    if not name_element:
+                        continue
+                    
+                    product_name = name_element.text.strip()
+                    
+                    # Verificar se é um componente individual (não começa com "PC")
+                    if not product_name.lower().startswith(('pc ', 'computador ', 'notebook ', 'laptop ')):
+                        # Verificar se contém a palavra do produto que estamos buscando
+                        search_words = produto.lower().split()
+                        product_name_lower = product_name.lower()
+                        
+                        # Verificar se todas as palavras da busca estão no nome do produto
+                        if all(word in product_name_lower for word in search_words):
+                            # Procurar preço
+                            price_selectors = [
+                                ".priceCard",
+                                "span.priceCard", 
+                                "[data-testid='price']",
+                                ".finalPrice",
+                                ".sc-dcJsrY.fkuRgL",
+                                ".price",
+                                ".priceMain",
+                                ".bestPrice",
+                                ".sc-dlfnbm"
+                            ]
+                            
+                            price_element = None
+                            for selector in price_selectors:
+                                try:
+                                    price_element = container.find_element(By.CSS_SELECTOR, selector)
+                                    if price_element:
+                                        break
+                                except:
+                                    continue
+                            
+                            if price_element:
+                                price_text = price_element.text.strip()
+                                price_value = self.clean_price_text(price_text)
+                                
+                                if price_value > 0:
+                                    valid_products.append({
+                                        "name": product_name,
+                                        "price": price_value,
+                                        "price_text": price_text,
+                                        "element": container
+                                    })
+                                    print(f"✅ Produto válido: {product_name} - R$ {price_value:.2f}")
+                    
+                except Exception as e:
+                    print(f"⚠️ Erro ao analisar produto: {e}")
+                    continue
             
-            price_element = self.try_find_element_safe(price_selectors, timeout=5)
+            if not valid_products:
+                print("❌ Nenhum produto válido encontrado")
+                return None
             
-            if not price_element:
-                print("❌ Preço não encontrado")
-                return {
-                    "site": "Kabum",
-                    "produto": product_name,
-                    "preco": None,
-                    "url": self.driver.current_url,
-                    "status": "produto_sem_preco"
-                }
+            # 8. Encontrar o produto mais barato
+            valid_products.sort(key=lambda x: x["price"])
+            cheapest_product = valid_products[0]
             
-            price_text = price_element.text.strip()
-            price_value = self.clean_price_text(price_text)
+            product_name = cheapest_product["name"]
+            price_value = cheapest_product["price"]
+            price_text = cheapest_product["price_text"]
+            
+            print(f"📦 Produto mais barato: {product_name}")
+            print(f"💰 Preço: R$ {price_value:.2f}")
             
             result = {
                 "site": "Kabum",
                 "produto": product_name,
-                "preco": price_value if price_value > 0 else None,
+                "preco": price_value,
                 "preco_texto": price_text,
                 "url": self.driver.current_url,
-                "status": "sucesso" if price_value > 0 else "preco_invalido"
+                "status": "sucesso"
             }
             
             print(f"🎉 KABUM RESULTADO:")
             print(f"   📦 Produto: {product_name}")
-            print(f"   💰 Preço: R$ {price_value:.2f}" if price_value > 0 else "   ❌ Preço inválido")
+            print(f"   💰 Preço: R$ {price_value:.2f}")
             print(f"   🌐 URL: {self.driver.current_url}")
             
             return result
@@ -372,232 +445,199 @@ class HumanBehaviorScraper:
             print(f"❌ ERRO NO KABUM: {e}")
             return None
     
-    def test_pichau_search(self, produto):
-        """Teste específico para Pichau com seletores melhorados"""
-        print(f"\n🟨 TESTANDO PICHAU: '{produto}'")
+    def test_amazon_search(self, produto):
+        """Teste específico para Amazon - encontra o produto mais barato"""
+        print(f"\n🟧 TESTANDO AMAZON: '{produto}'")
         print("=" * 50)
         
         try:
-            # 1. Navegar para página inicial
-            print("📡 Navegando para Pichau...")
-            self.driver.get("https://www.pichau.com.br/")
+            # 1. Navegar para página de busca da Amazon
+            print("📡 Navegando para Amazon...")
+            search_url = f"https://www.amazon.com.br/s?k={produto.replace(' ', '+')}&i=computers"
+            self.driver.get(search_url)
             self.human_delay(3, 5)
-            
-            # Verificar se está em manutenção
-            if self.check_maintenance_page():
-                print("⚠️ Site está em manutenção, pulando...")
-                return None
             
             # Fechar possíveis popups
             self.close_popups()
             
-            # 2. Encontrar campo de busca com seletores específicos da Pichau
-            print("🔍 Procurando campo de busca...")
-            search_selectors = [
-                "input[placeholder*='procurando']",
-                "input[placeholder*='Digite aqui']",
-                "input[type='search']",
-                "input[role='combobox']",
-                ".MuiInputBase-input",
-                "input.MuiInputBase-input",
-                "input[class*='search']",
-                "input[class*='Search']",
-                "input[name='q']",
-                "input[name='search']"
-            ]
-            
-            search_element = self.try_find_element_safe(search_selectors, timeout=10)
-            
-            if not search_element:
-                print("❌ Campo de busca não encontrado na Pichau")
-                return None
-            
-            print("✅ Campo de busca encontrado!")
-            
-            # 3. Digitar termo de busca
-            print(f"⌨️ Digitando: '{produto}'")
-            if not self.human_typing(search_element, produto):
-                print("❌ Erro ao digitar no campo")
-                return None
-            
-            # 4. Aguardar um pouco para o dropdown aparecer
-            print("⏳ Aguardando sugestões...")
-            self.human_delay(2, 3)
-            
-            # 5. Tentar selecionar o primeiro item do dropdown (autocomplete)
-            print("🔍 Procurando sugestões do dropdown...")
-            dropdown_selectors = [
-                ".MuiAutocomplete-option",
-                "[role='option']",
-                ".suggestion-item",
-                ".autocomplete-item",
-                "li[role='option']",
-                "div[role='option']"
-            ]
-            
-            dropdown_item = self.try_find_element_safe(dropdown_selectors, timeout=5)
-            if dropdown_item:
-                print("✅ Sugestão encontrada, selecionando...")
-                dropdown_item.click()
-            else:
-                print("❌ Nenhuma sugestão encontrada, pressionando Enter...")
-                search_element.send_keys(Keys.ENTER)
-            
-            # 6. Aguardar resultados
+            # 2. Aguardar resultados carregarem
             print("⏳ Aguardando resultados...")
-            self.human_delay(5, 8)
+            self.human_delay(4, 7)
             
-            # Verificar se foi redirecionado para página de SAC ou manutenção
-            current_url = self.driver.current_url
-            if "sac" in current_url.lower() or "atendimento" in current_url.lower():
-                print("⚠️ Redirecionado para página de SAC, pulando...")
-                return None
-                
-            if self.check_maintenance_page():
-                print("⚠️ Site está em manutenção, pulando...")
-                return None
-            
-            # Fechar popups novamente após a busca
-            self.close_popups()
-            
-            # 7. Scroll para garantir que elementos estão visíveis
+            # Fazer scroll para garantir que produtos carregaram
             self.scroll_randomly()
             
-            # 8. Procurar produtos - priorizando componentes individuais
+            # 3. Procurar produtos - seletores para Amazon
             print("🎯 Procurando produtos...")
-            
-            # Primeiro tentar encontrar componentes individuais
-            component_selectors = [
-                ".MuiGrid-item .MuiCard-root",  # Cards de produtos individuais
-                "[data-product-type='component']",  # Seletor hipotético para componentes
-                ".product-item:not(.bundle)",  # Produtos que não são bundles
-                ".product-card:not(.bundle)",
-                ".MuiCard-root:not(:has(.bundle-badge))"  # Cards sem badge de bundle
+            product_selectors = [
+                "[data-component-type='s-search-result']",
+                ".s-result-item",
+                ".s-card-container",
+                ".sg-col-inner"
             ]
             
-            product_element = None
-            for selector in component_selectors:
+            product_elements = []
+            for selector in product_selectors:
                 try:
                     elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
                     if elements:
-                        product_element = elements[0]  # Primeiro componente individual
-                        print("✅ Componente individual encontrado")
+                        product_elements = elements
                         break
                 except:
                     continue
             
-            # Se não encontrou componentes individuais, procurar qualquer produto
-            if not product_element:
-                print("🔍 Nenhum componente individual encontrado, procurando qualquer produto...")
-                product_selectors = [
-                    ".MuiCard-root",
-                    ".product-card",
-                    ".product-item",
-                    "[data-testid='product-card']",
-                    ".MuiGrid-item"
-                ]
-                
-                product_elements = []
-                for selector in product_selectors:
-                    try:
-                        elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
-                        if elements:
-                            product_elements.extend(elements)
-                    except:
-                        continue
-                
-                if product_elements:
-                    product_element = product_elements[0]  # Primeiro produto qualquer
-                    print("✅ Produto encontrado (pode ser PC pré-montado)")
-                else:
-                    print("❌ Nenhum produto encontrado")
-                    return None
-            
-            # 9. Extrair nome do produto
-            name_selectors = [
-                ".MuiTypography-h6",
-                ".MuiTypography-body1",
-                ".product-name",
-                ".name",
-                "h2",
-                "h3",
-                "[data-cy='product-name']",
-                "[data-testid='product-name']",
-                ".sc-kpDqfm",
-                ".productCard__name"
-            ]
-            
-            name_element = self.try_find_element_safe(name_selectors, timeout=5, parent_element=product_element)
-            if not name_element:
-                # Se não encontrou no elemento pai, tentar no documento todo
-                name_element = self.try_find_element_safe(name_selectors, timeout=5)
-            
-            if not name_element:
-                print("❌ Nome do produto não encontrado")
+            if not product_elements:
+                print("❌ Nenhum produto encontrado")
                 return None
             
-            product_name = name_element.text.strip()
-            print(f"📦 Produto encontrado: {product_name}")
+            print(f"✅ Encontrados {len(product_elements)} produtos")
             
-            # Verificar se é um PC pré-montado
-            is_prebuilt = any(word in product_name.lower() for word in ["pc", "computador", "completo", "kit", "combo", "gamer"])
-            if is_prebuilt:
-                print("⚠️ Produto parece ser um PC pré-montado, considerando filtrar...")
+            # 4. Coletar todos os produtos válidos com seus preços
+            print("🔍 Coletando produtos e preços...")
+            valid_products = []
             
-            # 10. Procurar preço
-            print("💰 Procurando preço...")
-            price_selectors = [
-                ".MuiTypography-h4",
-                ".MuiTypography-h5",
-                ".MuiTypography-h6",
-                ".price",
-                ".product-price",
-                ".finalPrice",
-                "[data-testid='price']",
-                "[data-cy='product-price']",
-                ".sc-dlfnbm",
-                ".productCard__price"
-            ]
+            for product in product_elements[:20]:  # Verificar apenas os primeiros 20 produtos
+                try:
+                    # Verificar se é um componente individual (não PC pré-montado)
+                    product_name = ""
+                    name_selectors = [
+                        "h2 a span",  # Nome do produto
+                        ".a-size-medium.a-color-base.a-text-normal",  # Classe comum para nomes
+                        "h2 .a-text-normal",  # Outro seletor para nomes
+                        ".a-size-base-plus.a-color-base.a-text-normal"  # Nome do produto alternativo
+                    ]
+                    
+                    for selector in name_selectors:
+                        try:
+                            name_element = product.find_element(By.CSS_SELECTOR, selector)
+                            product_name = name_element.text
+                            if product_name:
+                                break
+                        except:
+                            continue
+                    
+                    if not product_name:
+                        continue
+                    
+                    # Verificar se não é um PC pré-montado
+                    is_prebuilt = any(word in product_name.lower() for word in [
+                        "pc", "computador", "completo", "kit", "combo", "gamer", "notebook", "laptop"
+                    ])
+                    
+                    # Verificar se o produto corresponde exatamente ao termo de busca
+                    search_words = produto.lower().split()
+                    product_name_lower = product_name.lower()
+                    
+                    # Verificar se todas as palavras da busca estão no nome do produto
+                    matches_search = all(word in product_name_lower for word in search_words)
+                    
+                    # Se for um componente individual e corresponde à busca, tentar extrair o preço
+                    if not is_prebuilt and matches_search:
+                        # Extrair preço usando a estrutura HTML fornecida
+                        price_value = 0
+                        price_text = ""
+                        
+                        # Estratégia 1: Extrair usando a estrutura específica fornecida
+                        try:
+                            price_whole = product.find_element(By.CSS_SELECTOR, ".a-price-whole").text.strip()
+                            try:
+                                # Tentar encontrar a parte decimal
+                                price_decimal = product.find_element(By.CSS_SELECTOR, ".a-price-fraction").text.strip()
+                            except:
+                                # Se não encontrar .a-price-fraction, tentar .a-price-decimal
+                                try:
+                                    price_decimal_elem = product.find_element(By.CSS_SELECTOR, ".a-price-decimal")
+                                    # Se é apenas a vírgula, procurar o valor decimal em outro lugar
+                                    if price_decimal_elem.text.strip() == ",":
+                                        # Procurar o valor decimal após a vírgula
+                                        price_html = product.get_attribute("innerHTML")
+                                        decimal_match = re.search(r'<span class="a-price-decimal">,</span>\s*<span[^>]*>(\d+)</span>', price_html)
+                                        if decimal_match:
+                                            price_decimal = decimal_match.group(1)
+                                        else:
+                                            price_decimal = "00"
+                                    else:
+                                        price_decimal = price_decimal_elem.text.strip()
+                                except:
+                                    price_decimal = "00"
+                            
+                            price_text = f"{price_whole},{price_decimal}"
+                            price_value = self.clean_price_text(price_text)
+                        except Exception as e:
+                            print(f"      ⚠️ Erro na extração específica: {e}")
+                            # Estratégia 2: Se não funcionar, tentar métodos alternativos
+                            price_selectors = [
+                                ".a-price[data-a-size='xl'] .a-offscreen",  # Preço com símbolo
+                                ".a-price .a-offscreen",  # Preço com símbolo (alternativo)
+                                ".a-price-whole",  # Parte inteira do preço
+                                "[data-a-size='xl'] .a-price-whole",  # Preço em destaque
+                                ".a-price .a-price-whole",  # Parte inteira do preço dentro de .a-price
+                                ".a-price[data-a-size='l']",  # Preço grande
+                                ".a-price[data-a-size='m']",  # Preço médio
+                            ]
+                            
+                            for selector in price_selectors:
+                                try:
+                                    price_elements = product.find_elements(By.CSS_SELECTOR, selector)
+                                    for element in price_elements:
+                                        candidate_text = element.text.strip()
+                                        candidate_value = self.clean_price_text(candidate_text)
+                                        if candidate_value > 0:
+                                            price_text = candidate_text
+                                            price_value = candidate_value
+                                            break
+                                    if price_value > 0:
+                                        break
+                                except:
+                                    continue
+                        
+                        # Se encontrou um preço válido, adicionar à lista
+                        if price_value > 0:
+                            valid_products.append({
+                                "name": product_name,
+                                "price": price_value,
+                                "price_text": price_text,
+                                "element": product
+                            })
+                            print(f"✅ Produto válido: {product_name} - R$ {price_value:.2f}")
+                    
+                except Exception as e:
+                    print(f"      ⚠️ Erro ao analisar produto: {e}")
+                    continue
             
-            price_element = self.try_find_element_safe(price_selectors, timeout=5, parent_element=product_element)
-            if not price_element:
-                # Se não encontrou no elemento pai, tentar no documento todo
-                price_element = self.try_find_element_safe(price_selectors, timeout=5)
+            if not valid_products:
+                print("❌ Nenhum produto válido encontrado")
+                return None
             
-            if not price_element:
-                print("❌ Preço não encontrado")
-                return {
-                    "site": "Pichau",
-                    "produto": product_name,
-                    "preco": None,
-                    "url": self.driver.current_url,
-                    "status": "produto_sem_preco",
-                    "is_prebuilt": is_prebuilt
-                }
+            # 5. Encontrar o produto mais barato
+            valid_products.sort(key=lambda x: x["price"])
+            cheapest_product = valid_products[0]
             
-            price_text = price_element.text.strip()
-            price_value = self.clean_price_text(price_text)
+            product_name = cheapest_product["name"]
+            price_value = cheapest_product["price"]
+            price_text = cheapest_product["price_text"]
+            
+            print(f"📦 Produto mais barato: {product_name}")
+            print(f"💰 Preço: R$ {price_value:.2f}")
             
             result = {
-                "site": "Pichau",
+                "site": "Amazon",
                 "produto": product_name,
                 "preco": price_value,
                 "preco_texto": price_text,
                 "url": self.driver.current_url,
-                "status": "sucesso" if price_value > 0 else "preco_invalido",
-                "is_prebuilt": is_prebuilt
+                "status": "sucesso"
             }
             
-            print(f"🎉 PICHAU RESULTADO:")
+            print(f"🎉 AMAZON RESULTADO:")
             print(f"   📦 Produto: {product_name}")
-            print(f"   💰 Preço: R$ {price_value:.2f}" if price_value > 0 else "   ❌ Preço inválido")
-            print(f"   🖥️  Pré-montado: {'Sim' if is_prebuilt else 'Não'}")
+            print(f"   💰 Preço: R$ {price_value:.2f}")
             print(f"   🌐 URL: {self.driver.current_url}")
             
             return result
             
         except Exception as e:
-            print(f"❌ ERRO NA PICHAU: {e}")
+            print(f"❌ ERRO NA AMAZON: {e}")
             import traceback
             traceback.print_exc()
             return None
@@ -619,10 +659,10 @@ class HumanBehaviorScraper:
         print(f"\n⏸️  Pausa entre sites...")
         self.human_delay(5, 8)
         
-        # Testar Pichau
-        pichau_result = self.test_pichau_search(produto)
-        if pichau_result:
-            results['pichau'] = pichau_result
+        # Testar Amazon
+        amazon_result = self.test_amazon_search(produto)
+        if amazon_result:
+            results['amazon'] = amazon_result
         
         # Resumo do produto
         print(f"\n📋 RESUMO PARA '{produto}':")
@@ -633,18 +673,17 @@ class HumanBehaviorScraper:
         else:
             print("🟦 Kabum: ❌ Não encontrado")
             
-        if 'pichau' in results and results['pichau']['preco']:
-            prebuilt_note = " (Pré-montado)" if results['pichau'].get('is_prebuilt', False) else ""
-            print(f"🟨 Pichau: R$ {results['pichau']['preco']:.2f}{prebuilt_note}")
+        if 'amazon' in results and results['amazon']['preco']:
+            print(f"🟧 Amazon: R$ {results['amazon']['preco']:.2f}")
         else:
-            print("🟨 Pichau: ❌ Não encontrado")
+            print("🟧 Amazon: ❌ Não encontrado")
         
-        # Melhor preço (considerando apenas componentes individuais)
+        # Melhor preço
         valid_prices = []
         if 'kabum' in results and results['kabum']['preco']:
             valid_prices.append(('Kabum', results['kabum']['preco']))
-        if 'pichau' in results and results['pichau']['preco'] and not results['pichau'].get('is_prebuilt', False):
-            valid_prices.append(('Pichau', results['pichau']['preco']))
+        if 'amazon' in results and results['amazon']['preco']:
+            valid_prices.append(('Amazon', results['amazon']['preco']))
         
         if valid_prices:
             best_site, best_price = min(valid_prices, key=lambda x: x[1])
@@ -697,8 +736,7 @@ class HumanBehaviorScraper:
         print(f"{'='*60}")
         
         kabum_sucessos = 0
-        pichau_sucessos = 0
-        pichau_prebuilt = 0
+        amazon_sucessos = 0
         total_produtos = len(all_results)
         
         for produto, results in all_results.items():
@@ -710,22 +748,18 @@ class HumanBehaviorScraper:
             else:
                 print(f"   🟦 Kabum: ❌ Falhou")
             
-            if 'pichau' in results and results['pichau'].get('preco'):
-                prebuilt_note = " (Pré-montado)" if results['pichau'].get('is_prebuilt', False) else ""
-                print(f"   🟨 Pichau: ✅ R$ {results['pichau']['preco']:.2f}{prebuilt_note}")
-                pichau_sucessos += 1
-                if results['pichau'].get('is_prebuilt', False):
-                    pichau_prebuilt += 1
+            if 'amazon' in results and results['amazon'].get('preco'):
+                print(f"   🟧 Amazon: ✅ R$ {results['amazon']['preco']:.2f}")
+                amazon_sucessos += 1
             else:
-                print(f"   🟨 Pichau: ❌ Falhou")
+                print(f"   🟧 Amazon: ❌ Falhou")
         
         print(f"\n🎯 ESTATÍSTICAS:")
         print(f"   Kabum: {kabum_sucessos}/{total_produtos} ({kabum_sucessos/total_produtos*100:.1f}%)")
-        print(f"   Pichau: {pichau_sucessos}/{total_produtos} ({pichau_sucessos/total_produtos*100:.1f}%)")
-        print(f"   Pichau Pré-montados: {pichau_prebuilt}/{pichau_sucessos}")
-        print(f"   Total de buscas bem-sucedidas: {kabum_sucessos + pichau_sucessos}/{total_produtos * 2}")
+        print(f"   Amazon: {amazon_sucessos}/{total_produtos} ({amazon_sucessos/total_produtos*100:.1f}%)")
+        print(f"   Total de buscas bem-suedidas: {kabum_sucessos + amazon_sucessos}/{total_produtos * 2}")
         
-        if kabum_sucessos + pichau_sucessos >= total_produtos:
+        if kabum_sucessos + amazon_sucessos >= total_produtos:
             print("\n🎉 TESTE APROVADO! Scraper está funcionando bem.")
         else:
             print("\n⚠️ TESTE PARCIAL. Alguns sites podem precisar de ajustes nos seletores.")
