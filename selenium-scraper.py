@@ -1,21 +1,27 @@
+import os
 import time
 import random
 import re
+from supabase import create_client, Client
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, NoSuchElementException
+from selenium.common.exceptions import TimeoutException, NoSuchElementException, WebDriverException
 from selenium.webdriver.common.action_chains import ActionChains
+from dotenv import load_dotenv
 
-# Produtos para teste (use produtos reais que você sabe que existem)
-produtos_teste = [
-    "RX 7800 xt",
-    "Processador Intel i5 12400F", 
-    "ASUS B450M"
-]
+# Carregar variáveis de ambiente
+load_dotenv()
+
+# Configuração do Supabase
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
+
+# Inicializar cliente Supabase
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 class HumanBehaviorScraper:
     def __init__(self):
@@ -60,6 +66,18 @@ class HumanBehaviorScraper:
         except Exception as e:
             print(f"❌ Erro ao configurar driver: {e}")
             self.driver = None
+    
+    def wait_for_page_load(self, timeout=30):
+        """Espera até que a página esteja completamente carregada"""
+        try:
+            WebDriverWait(self.driver, timeout).until(
+                lambda driver: driver.execute_script("return document.readyState") == "complete"
+            )
+            print("✅ Página carregada completamente")
+            return True
+        except TimeoutException:
+            print("❌ Timeout esperando página carregar")
+            return False
     
     def human_mouse_movement(self, element):
         """Movimento de mouse mais humano"""
@@ -253,16 +271,25 @@ class HumanBehaviorScraper:
         except Exception as e:
             print(f"      ⚠️ Não foi possível fechar popups: {e}")
     
-    def test_kabum_search(self, produto):
+    def test_kabum_search(self, produto, marca=None):
         """Teste específico para Kabum - encontra o produto mais barato"""
         print(f"\n🟦 TESTANDO KABUM: '{produto}'")
+        if marca:
+            print(f"🔍 Com marca: '{marca}'")
         print("=" * 50)
         
         try:
             # 1. Navegar para página inicial
             print("📡 Navegando para Kabum...")
             self.driver.get("https://www.kabum.com.br/")
-            self.human_delay(3, 5)
+            
+            # Esperar página carregar completamente
+            if not self.wait_for_page_load():
+                print("❌ Página não carregou corretamente, tentando recarregar...")
+                self.driver.refresh()
+                if not self.wait_for_page_load():
+                    print("❌ Falha ao carregar página após recarregar")
+                    return None
             
             # Fazer scroll para ativar elementos
             self.scroll_randomly()
@@ -287,25 +314,33 @@ class HumanBehaviorScraper:
             
             print("✅ Campo de busca encontrado!")
             
-            # 3. Digitar termo de busca
-            print(f"⌨️  Digitando: '{produto}'")
-            if not self.human_typing(search_element, produto):
+            # 3. Preparar termo de busca com marca se disponível
+            search_term = f"{marca} {produto}" if marca and marca.lower() not in produto.lower() else produto
+            print(f"🔍 Termo de busca: '{search_term}'")
+            
+            # 4. Digitar termo de busca
+            print(f"⌨️  Digitando: '{search_term}'")
+            if not self.human_typing(search_element, search_term):
                 print("❌ Erro ao digitar no campo")
                 return None
             
-            # 4. Pressionar Enter ou clicar no botão
+            # 5. Pressionar Enter ou clicar no botão
             print("🚀 Executando busca...")
             self.human_delay(0.5, 1.5)
             search_element.send_keys(Keys.ENTER)
             
-            # 5. Aguardar resultados carregarem
+            # 6. Aguardar resultados carregarem
             print("⏳ Aguardando resultados...")
             self.human_delay(4, 7)
+            
+            # Esperar página de resultados carregar
+            if not self.wait_for_page_load():
+                print("⚠️ Página de resultados pode não ter carregado completamente")
             
             # Fazer scroll para garantir que produtos carregaram
             self.scroll_randomly()
             
-            # 6. Procurar todos os produtos na página
+            # 7. Procurar todos os produtos na página
             print("🎯 Procurando produtos...")
             
             # Primeiro, encontrar todos os produtos na página
@@ -331,7 +366,7 @@ class HumanBehaviorScraper:
                 print("❌ Nenhum produto encontrado")
                 return None
             
-            # 7. Coletar todos os produtos válidos com seus preços
+            # 8. Coletar todos os produtos válidos com seus preços
             print("🔍 Coletando produtos e preços...")
             valid_products = []
             
@@ -366,7 +401,7 @@ class HumanBehaviorScraper:
                     # Verificar se é um componente individual (não começa com "PC")
                     if not product_name.lower().startswith(('pc ', 'computador ', 'notebook ', 'laptop ')):
                         # Verificar se contém a palavra do produto que estamos buscando
-                        search_words = produto.lower().split()
+                        search_words = search_term.lower().split()
                         product_name_lower = product_name.lower()
                         
                         # Verificar se todas as palavras da busca estão no nome do produto
@@ -414,7 +449,7 @@ class HumanBehaviorScraper:
                 print("❌ Nenhum produto válido encontrado")
                 return None
             
-            # 8. Encontrar o produto mais barato
+            # 9. Encontrar o produto mais barato
             valid_products.sort(key=lambda x: x["price"])
             cheapest_product = valid_products[0]
             
@@ -445,17 +480,27 @@ class HumanBehaviorScraper:
             print(f"❌ ERRO NO KABUM: {e}")
             return None
     
-    def test_amazon_search(self, produto):
+    def test_amazon_search(self, produto, marca=None):
         """Teste específico para Amazon - encontra o produto mais barato"""
         print(f"\n🟧 TESTANDO AMAZON: '{produto}'")
+        if marca:
+            print(f"🔍 Com marca: '{marca}'")
         print("=" * 50)
         
         try:
             # 1. Navegar para página de busca da Amazon
             print("📡 Navegando para Amazon...")
-            search_url = f"https://www.amazon.com.br/s?k={produto.replace(' ', '+')}&i=computers"
+            search_term = f"{marca} {produto}" if marca and marca.lower() not in produto.lower() else produto
+            search_url = f"https://www.amazon.com.br/s?k={search_term.replace(' ', '+')}&i=computers"
             self.driver.get(search_url)
-            self.human_delay(3, 5)
+            
+            # Esperar página carregar completamente
+            if not self.wait_for_page_load():
+                print("❌ Página não carregou corretamente, tentando recarregar...")
+                self.driver.refresh()
+                if not self.wait_for_page_load():
+                    print("❌ Falha ao carregar página após recarregar")
+                    return None
             
             # Fechar possíveis popups
             self.close_popups()
@@ -463,6 +508,10 @@ class HumanBehaviorScraper:
             # 2. Aguardar resultados carregarem
             print("⏳ Aguardando resultados...")
             self.human_delay(4, 7)
+            
+            # Esperar página de resultados carregar
+            if not self.wait_for_page_load():
+                print("⚠️ Página de resultados pode não ter carregado completamente")
             
             # Fazer scroll para garantir que produtos carregaram
             self.scroll_randomly()
@@ -525,7 +574,7 @@ class HumanBehaviorScraper:
                     ])
                     
                     # Verificar se o produto corresponde exatamente ao termo de busca
-                    search_words = produto.lower().split()
+                    search_words = search_term.lower().split()
                     product_name_lower = product_name.lower()
                     
                     # Verificar se todas as palavras da busca estão no nome do produto
@@ -642,16 +691,21 @@ class HumanBehaviorScraper:
             traceback.print_exc()
             return None
     
-    def test_product(self, produto):
+    def test_product(self, component):
         """Testa busca de um produto em ambos os sites"""
+        produto = component['name']
+        marca = component.get('brand')
+        
         print(f"\n{'='*60}")
         print(f"🧪 TESTANDO PRODUTO: {produto}")
+        if marca:
+            print(f"🏷️  MARCA: {marca}")
         print(f"{'='*60}")
         
         results = {}
         
         # Testar Kabum
-        kabum_result = self.test_kabum_search(produto)
+        kabum_result = self.test_kabum_search(produto, marca)
         if kabum_result:
             results['kabum'] = kabum_result
         
@@ -660,7 +714,7 @@ class HumanBehaviorScraper:
         self.human_delay(5, 8)
         
         # Testar Amazon
-        amazon_result = self.test_amazon_search(produto)
+        amazon_result = self.test_amazon_search(produto, marca)
         if amazon_result:
             results['amazon'] = amazon_result
         
@@ -693,77 +747,6 @@ class HumanBehaviorScraper:
         
         return results
     
-    def run_tests(self, limit=2):
-        """Executa testes com produtos limitados"""
-        print("🧪 MODO TESTE - SCRAPER DE COMPONENTES")
-        print("Vamos testar se conseguimos buscar e extrair preços corretamente")
-        print(f"Testando {limit} produtos dos {len(produtos_teste)} disponíveis\n")
-        
-        if not self.driver:
-            print("❌ Driver não foi configurado corretamente")
-            return
-        
-        test_products = produtos_teste[:limit]
-        all_results = {}
-        
-        try:
-            for i, produto in enumerate(test_products, 1):
-                print(f"\n🎯 TESTE {i}/{len(test_products)}")
-                
-                results = self.test_product(produto)
-                all_results[produto] = results
-                
-                # Delay entre produtos (exceto no último)
-                if i < len(test_products):
-                    delay = random.uniform(8, 15)
-                    print(f"\n⏳ Pausa de {delay:.1f}s antes do próximo produto...")
-                    time.sleep(delay)
-            
-            # Relatório final
-            self.print_final_report(all_results)
-            
-        except KeyboardInterrupt:
-            print("\n⚠️ Teste interrompido pelo usuário")
-        except Exception as e:
-            print(f"\n❌ Erro durante teste: {e}")
-        finally:
-            self.close()
-    
-    def print_final_report(self, all_results):
-        """Imprime relatório final dos testes"""
-        print(f"\n{'='*60}")
-        print("📊 RELATÓRIO FINAL DOS TESTES")
-        print(f"{'='*60}")
-        
-        kabum_sucessos = 0
-        amazon_sucessos = 0
-        total_produtos = len(all_results)
-        
-        for produto, results in all_results.items():
-            print(f"\n📦 {produto}:")
-            
-            if 'kabum' in results and results['kabum'].get('preco'):
-                print(f"   🟦 Kabum: ✅ R$ {results['kabum']['preco']:.2f}")
-                kabum_sucessos += 1
-            else:
-                print(f"   🟦 Kabum: ❌ Falhou")
-            
-            if 'amazon' in results and results['amazon'].get('preco'):
-                print(f"   🟧 Amazon: ✅ R$ {results['amazon']['preco']:.2f}")
-                amazon_sucessos += 1
-            else:
-                print(f"   🟧 Amazon: ❌ Falhou")
-        
-        print(f"\n🎯 ESTATÍSTICAS:")
-        print(f"   Kabum: {kabum_sucessos}/{total_produtos} ({kabum_sucessos/total_produtos*100:.1f}%)")
-        print(f"   Amazon: {amazon_sucessos}/{total_produtos} ({amazon_sucessos/total_produtos*100:.1f}%)")
-        print(f"   Total de buscas bem-suedidas: {kabum_sucessos + amazon_sucessos}/{total_produtos * 2}")
-        
-        if kabum_sucessos + amazon_sucessos >= total_produtos:
-            print("\n🎉 TESTE APROVADO! Scraper está funcionando bem.")
-        else:
-            print("\n⚠️ TESTE PARCIAL. Alguns sites podem precisar de ajustes nos seletores.")
-    
     def close(self):
         """Fecha o driver"""
         if self.driver:
@@ -774,14 +757,99 @@ class HumanBehaviorScraper:
                 pass
 
 def main():
-    print("🔧 INICIANDO TESTES DO SCRAPER")
-    print("Este modo testa se conseguimos buscar e extrair preços corretamente")
-    print("Após os testes funcionarem, podemos integrar com o Supabase\n")
+    print("🔧 INICIANDO SCRAPER COM SUPABASE")
+    print("Este modo busca componentes no Supabase e atualiza os preços")
     
-    scraper = HumanBehaviorScraper()
-    
-    # Testar com apenas 2 produtos primeiro
-    scraper.run_tests(limit=2)
+    # Buscar componentes do Supabase
+    try:
+        response = supabase.table("components").select("*").limit(2).execute()
+        components = response.data
+        
+        if not components:
+            print("❌ Nenhum componente encontrado no Supabase")
+            return
+        
+        print(f"📦 Encontrados {len(components)} componentes no Supabase")
+        
+        scraper = HumanBehaviorScraper()
+        
+        for component in components:
+            component_id = component['id']
+            component_name = component['name']
+            component_brand = component.get('brand')
+            print(f"\n🔍 Processando componente: {component_name} (ID: {component_id})")
+            if component_brand:
+                print(f"🏷️  Marca: {component_brand}")
+            
+            # Testar o produto nas lojas
+            results = scraper.test_product(component)
+            
+            # Preparar dados para atualização
+            best_price_data = component.get('best_price', {})
+            if not best_price_data:
+                best_price_data = {
+                    "best": {"url": None, "price": None, "store": None},
+                    "kabum": {"url": None, "found": False, "price": None},
+                    "amazon": {"url": None, "found": False, "price": None},
+                    "updated_at": None
+                }
+            
+            # Preencher com os resultados
+            if 'kabum' in results and results['kabum']['preco']:
+                best_price_data['kabum'] = {
+                    "url": results['kabum']['url'],
+                    "found": True,
+                    "price": results['kabum']['preco']
+                }
+            
+            if 'amazon' in results and results['amazon']['preco']:
+                best_price_data['amazon'] = {
+                    "url": results['amazon']['url'],
+                    "found": True,
+                    "price": results['amazon']['preco']
+                }
+            
+            # Determinar o melhor preço
+            valid_prices = []
+            if 'kabum' in results and results['kabum']['preco']:
+                valid_prices.append(('kabum', results['kabum']['preco']))
+            if 'amazon' in results and results['amazon']['preco']:
+                valid_prices.append(('amazon', results['amazon']['preco']))
+            
+            if valid_prices:
+                best_store, best_price = min(valid_prices, key=lambda x: x[1])
+                best_price_data['best'] = {
+                    "url": results[best_store]['url'],
+                    "price": best_price,
+                    "store": best_store
+                }
+            
+            # Atualizar data de atualização
+            best_price_data['updated_at'] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            
+            # Atualizar o componente no Supabase
+            try:
+                update_response = supabase.table("components").update({
+                    "best_price": best_price_data
+                }).eq("id", component_id).execute()
+                
+                if update_response.data:
+                    print(f"✅ Componente {component_name} atualizado com sucesso!")
+                else:
+                    print(f"❌ Falha ao atualizar componente {component_name}")
+            except Exception as e:
+                print(f"❌ Erro ao atualizar componente no Supabase: {e}")
+            
+            # Delay entre componentes
+            if component != components[-1]:
+                delay = random.uniform(8, 15)
+                print(f"\n⏳ Pausa de {delay:.1f}s antes do próximo componente...")
+                time.sleep(delay)
+        
+        scraper.close()
+        
+    except Exception as e:
+        print(f"❌ Erro ao buscar componentes do Supabase: {e}")
 
 if __name__ == "__main__":
     main()
