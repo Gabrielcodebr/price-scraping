@@ -193,6 +193,62 @@ class HumanBehaviorScraper:
         print(f"      ❌ Nenhum seletor funcionou")
         return None
     
+    def close_popups(self):
+        """Tenta fechar popups que possam aparecer"""
+        try:
+            # Tentar fechar popups comuns
+            close_selectors = [
+                "button[aria-label*='fechar']",
+                "button[aria-label*='close']",
+                ".close-button",
+                ".modal-close",
+                ".btn-close",
+                "#onesignal-slidedown-cancel-button"
+            ]
+            
+            for selector in close_selectors:
+                try:
+                    close_buttons = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                    for button in close_buttons:
+                        if button.is_displayed():
+                            button.click()
+                            print("✅ Popup fechado")
+                            time.sleep(1)
+                            break
+                except:
+                    continue
+        except Exception as e:
+            print(f"      ⚠️ Não foi possível fechar popups: {e}")
+    
+    def check_maintenance_page(self):
+        """Verifica se a página está em modo de manutenção"""
+        try:
+            # Verificar por elementos que indicam manutenção
+            maintenance_indicators = [
+                "body.maintenance",
+                ".maintenance-page",
+                "#maintenance",
+                "h1:contains('Manutenção')",
+                "h1:contains('manutenção')",
+                "p:contains('estamos em manutenção')",
+                "div:contains('volte em breve')"
+            ]
+            
+            page_text = self.driver.page_source.lower()
+            if any(word in page_text for word in ["manutenção", "maintenance", "temporariamente", "em breve"]):
+                return True
+                
+            for selector in maintenance_indicators:
+                try:
+                    if self.driver.find_element(By.CSS_SELECTOR, selector):
+                        return True
+                except:
+                    continue
+                    
+            return False
+        except:
+            return False
+    
     def test_kabum_search(self, produto):
         """Teste específico para Kabum"""
         print(f"\n🟦 TESTANDO KABUM: '{produto}'")
@@ -317,7 +373,7 @@ class HumanBehaviorScraper:
             return None
     
     def test_pichau_search(self, produto):
-        """Teste específico para Pichau"""
+        """Teste específico para Pichau com seletores melhorados"""
         print(f"\n🟨 TESTANDO PICHAU: '{produto}'")
         print("=" * 50)
         
@@ -327,24 +383,27 @@ class HumanBehaviorScraper:
             self.driver.get("https://www.pichau.com.br/")
             self.human_delay(3, 5)
             
-            # Verificar se não está em manutenção
-            page_text = self.driver.page_source.lower()
-            if any(word in page_text for word in ["manutenção", "maintenance", "temporariamente"]):
-                print("⚠️ Site está em manutenção")
+            # Verificar se está em manutenção
+            if self.check_maintenance_page():
+                print("⚠️ Site está em manutenção, pulando...")
                 return None
             
-            self.scroll_randomly()
+            # Fechar possíveis popups
+            self.close_popups()
             
-            # 2. Encontrar campo de busca
+            # 2. Encontrar campo de busca com seletores específicos da Pichau
             print("🔍 Procurando campo de busca...")
             search_selectors = [
-                "input[name='search']",
-                "#search",
-                "input[placeholder*='Buscar']",
-                "input[placeholder*='buscar']",
-                "[data-testid='search-input']",
-                ".search-input",
-                "input[type='search']"
+                "input[placeholder*='procurando']",
+                "input[placeholder*='Digite aqui']",
+                "input[type='search']",
+                "input[role='combobox']",
+                ".MuiInputBase-input",
+                "input.MuiInputBase-input",
+                "input[class*='search']",
+                "input[class*='Search']",
+                "input[name='q']",
+                "input[name='search']"
             ]
             
             search_element = self.try_find_element_safe(search_selectors, timeout=10)
@@ -356,90 +415,154 @@ class HumanBehaviorScraper:
             print("✅ Campo de busca encontrado!")
             
             # 3. Digitar termo de busca
-            print(f"⌨️  Digitando: '{produto}'")
+            print(f"⌨️ Digitando: '{produto}'")
             if not self.human_typing(search_element, produto):
                 print("❌ Erro ao digitar no campo")
                 return None
             
-            # 4. Executar busca
-            print("🚀 Executando busca...")
-            self.human_delay(0.5, 1.5)
-            search_element.send_keys(Keys.ENTER)
+            # 4. Aguardar um pouco para o dropdown aparecer
+            print("⏳ Aguardando sugestões...")
+            self.human_delay(2, 3)
             
-            # 5. Aguardar resultados
-            print("⏳ Aguardando resultados...")
-            self.human_delay(4, 7)
-            
-            self.scroll_randomly()
-            
-            # 8. Debug: verificar se há produtos na página
-            print("🔍 DEBUG: Verificando se há produtos na página...")
-            try:
-                # Contar diferentes tipos de elementos que podem indicar produtos
-                product_indicators = [
-                    (".product", "divs com classe product"),
-                    ("[data-testid*='product']", "elementos com data-testid product"),
-                    (".card", "cards"),
-                    (".item", "items"),
-                    ("h1,h2,h3,h4", "títulos"),
-                    ("img", "imagens"),
-                    (".price,.preco", "elementos de preço")
-                ]
-                
-                for selector, desc in product_indicators:
-                    try:
-                        elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
-                        print(f"   {desc}: {len(elements)} encontrados")
-                    except:
-                        print(f"   {desc}: erro ao contar")
-                        
-            except Exception as e:
-                print(f"   Erro no debug: {e}")
-            
-            # 9. Procurar primeiro produto com mais seletores
-            print("🎯 Procurando produtos...")
-            name_selectors = [
-                # Seletores específicos conhecidos
-                "h2.mui-ulfya8-product_info_title-noMarginBottom",
-                ".product-name",
-                "h2[class*='product']",
-                ".MuiTypography-h6",
-                "[data-cy='product-name']",
-                "h2[class*='title']",
-                ".product-title",
-                ".MuiTypography-root",
-                # Seletores mais genéricos
-                "h1", "h2", "h3",
-                ".card h2", ".card h3", ".card h4",
-                ".item h2", ".item h3", ".item h4",
-                "[class*='name']",
-                "[class*='title']",
-                "[class*='produto']"
+            # 5. Tentar selecionar o primeiro item do dropdown (autocomplete)
+            print("🔍 Procurando sugestões do dropdown...")
+            dropdown_selectors = [
+                ".MuiAutocomplete-option",
+                "[role='option']",
+                ".suggestion-item",
+                ".autocomplete-item",
+                "li[role='option']",
+                "div[role='option']"
             ]
             
-            name_element = self.try_find_element_safe(name_selectors, timeout=8)
+            dropdown_item = self.try_find_element_safe(dropdown_selectors, timeout=5)
+            if dropdown_item:
+                print("✅ Sugestão encontrada, selecionando...")
+                dropdown_item.click()
+            else:
+                print("❌ Nenhuma sugestão encontrada, pressionando Enter...")
+                search_element.send_keys(Keys.ENTER)
+            
+            # 6. Aguardar resultados
+            print("⏳ Aguardando resultados...")
+            self.human_delay(5, 8)
+            
+            # Verificar se foi redirecionado para página de SAC ou manutenção
+            current_url = self.driver.current_url
+            if "sac" in current_url.lower() or "atendimento" in current_url.lower():
+                print("⚠️ Redirecionado para página de SAC, pulando...")
+                return None
+                
+            if self.check_maintenance_page():
+                print("⚠️ Site está em manutenção, pulando...")
+                return None
+            
+            # Fechar popups novamente após a busca
+            self.close_popups()
+            
+            # 7. Scroll para garantir que elementos estão visíveis
+            self.scroll_randomly()
+            
+            # 8. Procurar produtos - priorizando componentes individuais
+            print("🎯 Procurando produtos...")
+            
+            # Primeiro tentar encontrar componentes individuais
+            component_selectors = [
+                ".MuiGrid-item .MuiCard-root",  # Cards de produtos individuais
+                "[data-product-type='component']",  # Seletor hipotético para componentes
+                ".product-item:not(.bundle)",  # Produtos que não são bundles
+                ".product-card:not(.bundle)",
+                ".MuiCard-root:not(:has(.bundle-badge))"  # Cards sem badge de bundle
+            ]
+            
+            product_element = None
+            for selector in component_selectors:
+                try:
+                    elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                    if elements:
+                        product_element = elements[0]  # Primeiro componente individual
+                        print("✅ Componente individual encontrado")
+                        break
+                except:
+                    continue
+            
+            # Se não encontrou componentes individuais, procurar qualquer produto
+            if not product_element:
+                print("🔍 Nenhum componente individual encontrado, procurando qualquer produto...")
+                product_selectors = [
+                    ".MuiCard-root",
+                    ".product-card",
+                    ".product-item",
+                    "[data-testid='product-card']",
+                    ".MuiGrid-item"
+                ]
+                
+                product_elements = []
+                for selector in product_selectors:
+                    try:
+                        elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                        if elements:
+                            product_elements.extend(elements)
+                    except:
+                        continue
+                
+                if product_elements:
+                    product_element = product_elements[0]  # Primeiro produto qualquer
+                    print("✅ Produto encontrado (pode ser PC pré-montado)")
+                else:
+                    print("❌ Nenhum produto encontrado")
+                    return None
+            
+            # 9. Extrair nome do produto
+            name_selectors = [
+                ".MuiTypography-h6",
+                ".MuiTypography-body1",
+                ".product-name",
+                ".name",
+                "h2",
+                "h3",
+                "[data-cy='product-name']",
+                "[data-testid='product-name']",
+                ".sc-kpDqfm",
+                ".productCard__name"
+            ]
+            
+            name_element = self.try_find_element_safe(name_selectors, timeout=5, parent_element=product_element)
+            if not name_element:
+                # Se não encontrou no elemento pai, tentar no documento todo
+                name_element = self.try_find_element_safe(name_selectors, timeout=5)
             
             if not name_element:
-                print("❌ Nenhum produto encontrado")
+                print("❌ Nome do produto não encontrado")
                 return None
             
             product_name = name_element.text.strip()
             print(f"📦 Produto encontrado: {product_name}")
             
-            # 7. Procurar preço
+            # Verificar se é um PC pré-montado
+            is_prebuilt = any(word in product_name.lower() for word in ["pc", "computador", "completo", "kit", "combo", "gamer"])
+            if is_prebuilt:
+                print("⚠️ Produto parece ser um PC pré-montado, considerando filtrar...")
+            
+            # 10. Procurar preço
             print("💰 Procurando preço...")
             price_selectors = [
-                "div.mui-12athy2-price_vista",
-                ".price-vista",
-                "[data-cy='price']",
+                ".MuiTypography-h4",
+                ".MuiTypography-h5",
+                ".MuiTypography-h6",
                 ".price",
-                "div[class*='price']",
-                ".priceMain",
-                ".bestPrice",
-                ".MuiTypography-h5"
+                ".product-price",
+                ".finalPrice",
+                "[data-testid='price']",
+                "[data-cy='product-price']",
+                ".sc-dlfnbm",
+                ".productCard__price"
             ]
             
-            price_element = self.try_find_element_safe(price_selectors, timeout=5)
+            price_element = self.try_find_element_safe(price_selectors, timeout=5, parent_element=product_element)
+            if not price_element:
+                # Se não encontrou no elemento pai, tentar no documento todo
+                price_element = self.try_find_element_safe(price_selectors, timeout=5)
             
             if not price_element:
                 print("❌ Preço não encontrado")
@@ -448,7 +571,8 @@ class HumanBehaviorScraper:
                     "produto": product_name,
                     "preco": None,
                     "url": self.driver.current_url,
-                    "status": "produto_sem_preco"
+                    "status": "produto_sem_preco",
+                    "is_prebuilt": is_prebuilt
                 }
             
             price_text = price_element.text.strip()
@@ -457,21 +581,25 @@ class HumanBehaviorScraper:
             result = {
                 "site": "Pichau",
                 "produto": product_name,
-                "preco": price_value if price_value > 0 else None,
+                "preco": price_value,
                 "preco_texto": price_text,
                 "url": self.driver.current_url,
-                "status": "sucesso" if price_value > 0 else "preco_invalido"
+                "status": "sucesso" if price_value > 0 else "preco_invalido",
+                "is_prebuilt": is_prebuilt
             }
             
             print(f"🎉 PICHAU RESULTADO:")
             print(f"   📦 Produto: {product_name}")
             print(f"   💰 Preço: R$ {price_value:.2f}" if price_value > 0 else "   ❌ Preço inválido")
+            print(f"   🖥️  Pré-montado: {'Sim' if is_prebuilt else 'Não'}")
             print(f"   🌐 URL: {self.driver.current_url}")
             
             return result
             
         except Exception as e:
             print(f"❌ ERRO NA PICHAU: {e}")
+            import traceback
+            traceback.print_exc()
             return None
     
     def test_product(self, produto):
@@ -506,15 +634,16 @@ class HumanBehaviorScraper:
             print("🟦 Kabum: ❌ Não encontrado")
             
         if 'pichau' in results and results['pichau']['preco']:
-            print(f"🟨 Pichau: R$ {results['pichau']['preco']:.2f}")
+            prebuilt_note = " (Pré-montado)" if results['pichau'].get('is_prebuilt', False) else ""
+            print(f"🟨 Pichau: R$ {results['pichau']['preco']:.2f}{prebuilt_note}")
         else:
             print("🟨 Pichau: ❌ Não encontrado")
         
-        # Melhor preço
+        # Melhor preço (considerando apenas componentes individuais)
         valid_prices = []
         if 'kabum' in results and results['kabum']['preco']:
             valid_prices.append(('Kabum', results['kabum']['preco']))
-        if 'pichau' in results and results['pichau']['preco']:
+        if 'pichau' in results and results['pichau']['preco'] and not results['pichau'].get('is_prebuilt', False):
             valid_prices.append(('Pichau', results['pichau']['preco']))
         
         if valid_prices:
@@ -569,6 +698,7 @@ class HumanBehaviorScraper:
         
         kabum_sucessos = 0
         pichau_sucessos = 0
+        pichau_prebuilt = 0
         total_produtos = len(all_results)
         
         for produto, results in all_results.items():
@@ -581,14 +711,18 @@ class HumanBehaviorScraper:
                 print(f"   🟦 Kabum: ❌ Falhou")
             
             if 'pichau' in results and results['pichau'].get('preco'):
-                print(f"   🟨 Pichau: ✅ R$ {results['pichau']['preco']:.2f}")
+                prebuilt_note = " (Pré-montado)" if results['pichau'].get('is_prebuilt', False) else ""
+                print(f"   🟨 Pichau: ✅ R$ {results['pichau']['preco']:.2f}{prebuilt_note}")
                 pichau_sucessos += 1
+                if results['pichau'].get('is_prebuilt', False):
+                    pichau_prebuilt += 1
             else:
                 print(f"   🟨 Pichau: ❌ Falhou")
         
         print(f"\n🎯 ESTATÍSTICAS:")
         print(f"   Kabum: {kabum_sucessos}/{total_produtos} ({kabum_sucessos/total_produtos*100:.1f}%)")
         print(f"   Pichau: {pichau_sucessos}/{total_produtos} ({pichau_sucessos/total_produtos*100:.1f}%)")
+        print(f"   Pichau Pré-montados: {pichau_prebuilt}/{pichau_sucessos}")
         print(f"   Total de buscas bem-sucedidas: {kabum_sucessos + pichau_sucessos}/{total_produtos * 2}")
         
         if kabum_sucessos + pichau_sucessos >= total_produtos:
