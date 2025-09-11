@@ -1,0 +1,17 @@
+version: '3.8'
+
+services:
+  selenium-scraper:
+    build: .
+    container_name: pc-scraper
+    env_file:
+      - .env
+    volumes:
+      - .:/app
+    working_dir: /app
+    restart: on-failure
+    # Para desenvolvimento, você pode remover a linha abaixo em produção
+    stdin_open: true
+    tty: true
+
+  
