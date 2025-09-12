@@ -1,4 +1,4 @@
-FROM python:3.9-slim
+FROM python:3.9-slim-bullseye
 
 # Instalar dependências do sistema
 RUN apt-get update && apt-get install -y \
@@ -6,38 +6,57 @@ RUN apt-get update && apt-get install -y \
     gnupg \
     curl \
     unzip \
+    fonts-liberation \
+    libasound2 \
+    libatk-bridge2.0-0 \
+    libatk1.0-0 \
+    libatspi2.0-0 \
+    libcups2 \
+    libdbus-1-3 \
+    libdrm2 \
+    libgbm1 \
+    libgtk-3-0 \
+    libnspr4 \
+    libnss3 \
+    libwayland-client0 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxfixes3 \
+    libxkbcommon0 \
+    libxrandr2 \
+    xdg-utils \
     --no-install-recommends
 
-# Adicionar chave do Google Chrome manualmente
-RUN mkdir -p /etc/apt/keyrings
-RUN wget -q -O - https://dl.google.com/linux/linux_signing_key.pub > /etc/apt/keyrings/google-chrome-key.pub
-
 # Adicionar repositório do Chrome
-RUN echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/google-chrome-key.pub] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list
+RUN wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | apt-key add - && \
+    echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list
 
-# Instalar Chrome
+# Instalar Chrome estável
 RUN apt-get update && apt-get install -y google-chrome-stable
 
-# Instalar ChromeDriver - abordagem simplificada
-RUN wget https://storage.googleapis.com/chrome-for-testing-public/122.0.6261.69/linux64/chromedriver-linux64.zip -O /tmp/chromedriver.zip && \
-    unzip /tmp/chromedriver.zip -d /tmp/ && \
-    mv /tmp/chromedriver-linux64/chromedriver /usr/local/bin/ && \
-    chmod +x /usr/local/bin/chromedriver && \
-    rm -rf /tmp/chromedriver.zip /tmp/chromedriver-linux64
+# Instalar ChromeDriver compatível (usando webdriver-manager via pip)
+RUN apt-get install -y curl && \
+    curl -sS https://bootstrap.pypa.io/get-pip.py | python3
 
-# Configurar diretório de trabalho
 WORKDIR /app
 
-# Copiar requirements e instalar dependências Python
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copiar código da aplicação
 COPY . .
 
-# Definir variáveis de ambiente
-ENV PYTHONUNBUFFERED=1
-ENV PATH="/usr/local/bin:${PATH}"
+# Criar usuário e grupo com UID/GID específicos para evitar problemas de permissão
+RUN groupadd -r scraper -g 1000 && \
+    useradd -r -u 1000 -g scraper -d /home/scraper -s /bin/bash scraper && \
+    mkdir -p /home/scraper && \
+    chown -R scraper:scraper /home/scraper && \
+    chown -R scraper:scraper /app
 
-# Comando para executar o scraper
+# Mudar para usuário não-root
+USER scraper
+
+# Definir variáveis de ambiente para Chrome
+ENV CHROME_BIN=/usr/bin/google-chrome
+ENV CHROME_DRIVER_PATH=/usr/local/bin/chromedriver
+
 CMD ["python", "selenium-scraper.py"]

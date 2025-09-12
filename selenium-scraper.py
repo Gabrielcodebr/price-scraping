@@ -12,6 +12,8 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, NoSuchElementException, WebDriverException
 from selenium.webdriver.common.action_chains import ActionChains
 from dotenv import load_dotenv
+from webdriver_manager.chrome import ChromeDriverManager
+from selenium.webdriver.chrome.service import Service
 
 # Carregar variáveis de ambiente
 load_dotenv()
@@ -26,46 +28,65 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 class HumanBehaviorScraper:
     def __init__(self):
         self.driver = None
-        self.setup_driver()
+        try:
+            self.setup_driver()
+        except Exception as e:
+            print(f"❌ Erro no construtor do HumanBehaviorScraper: {e}")
+            self.driver = None
     
     def setup_driver(self):
         """Configura Chrome para parecer mais humano"""
         try:
             chrome_options = Options()
-            
+        
+            # Configurações ESSENCIAIS para Docker
+            chrome_options.add_argument("--headless=new")
+            chrome_options.add_argument("--no-sandbox")
+            chrome_options.add_argument("--disable-dev-shm-usage")  # Crucial para Docker
+            chrome_options.add_argument("--disable-gpu")
+            chrome_options.add_argument("--window-size=1920,1080")
+            chrome_options.add_argument("--remote-debugging-port=9222")
+        
             # Configurações para parecer um usuário real
-            chrome_options.add_argument("--start-maximized")
             chrome_options.add_argument("--disable-blink-features=AutomationControlled")
             chrome_options.add_argument("--disable-extensions")
-            chrome_options.add_argument("--disable-plugins-discovery") 
-            chrome_options.add_argument("--disable-dev-shm-usage")
-            chrome_options.add_argument("--no-sandbox")
-            
-            # User agent mais realista
+            chrome_options.add_argument("--disable-plugins-discovery")
+        
+            # User agent realista
             user_agents = [
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
             ]
-            
             chrome_options.add_argument(f"--user-agent={random.choice(user_agents)}")
-            
+        
             # Desabilitar automação detectável
             chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
             chrome_options.add_experimental_option('useAutomationExtension', False)
-            
-            self.driver = webdriver.Chrome(options=chrome_options)
-            
+        
+            # Configurações de desempenho
+            chrome_options.add_argument("--disable-software-rasterizer")
+            chrome_options.add_argument("--disable-web-security")
+            chrome_options.add_argument("--allow-running-insecure-content")
+        
+            # Usar webdriver-manager para baixar automaticamente o ChromeDriver correto
+            service = Service(ChromeDriverManager().install())
+        
+            # Inicializar driver com configurações
+            self.driver = webdriver.Chrome(service=service, options=chrome_options)
+        
             # Scripts para esconder automação
             self.driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
             self.driver.execute_script("Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]})")
             self.driver.execute_script("Object.defineProperty(navigator, 'languages', {get: () => ['pt-BR', 'pt', 'en']})")
-            
+        
             print("✅ Driver configurado para comportamento humano")
-            
+            return True
+        
         except Exception as e:
-            print(f"❌ Erro ao configurar driver: {e}")
+            print(f"❌ Erro crítico ao configurar driver: {e}")
+            print("⚠️  Verifique se todas as dependências estão instaladas corretamente")
             self.driver = None
+            return False
     
     def wait_for_page_load(self, timeout=30):
         """Espera até que a página esteja completamente carregada"""
@@ -335,7 +356,7 @@ class HumanBehaviorScraper:
             
             # Esperar página de resultados carregar
             if not self.wait_for_page_load():
-                print("⚠️ Página de resultados pode não ter carregado completamente")
+                print("⚠️ Página de resultados pode não have carregado completamente")
             
             # Fazer scroll para garantir que produtos carregaram
             self.scroll_randomly()
@@ -547,7 +568,7 @@ class HumanBehaviorScraper:
             
             for product in product_elements[:20]:  # Verificar apenas os primeiros 20 produtos
                 try:
-                    # Verificar se é um componente individual (não PC pré-montado)
+                    # Verificar if é um componente individual (não PC pré-montado)
                     product_name = ""
                     name_selectors = [
                         "h2 a span",  # Nome do produto
@@ -622,7 +643,7 @@ class HumanBehaviorScraper:
                                 "[data-a-size='xl'] .a-price-whole",  # Preço em destaque
                                 ".a-price .a-price-whole",  # Parte inteira do preço dentro de .a-price
                                 ".a-price[data-a-size='l']",  # Preço grande
-                                ".a-price[data-a-size='m']",  # Preço médio
+                                ".a-price[data-a-size='m']",  # Preço médio,
                             ]
                             
                             for selector in price_selectors:
@@ -758,6 +779,23 @@ class HumanBehaviorScraper:
 
 def main():
     print("🔧 INICIANDO SCRAPER COM SUPABASE")
+    
+    # Inicializar o scraper
+    try:
+        scraper = HumanBehaviorScraper()
+    except Exception as e:
+        print(f"❌ Erro ao inicializar o scraper: {e}")
+        return
+
+    # Verificar se o driver foi inicializado corretamente
+    if not scraper.driver:
+        print("❌ Falha crítica: Driver do Chrome não foi inicializado")
+        print("⚠️  Possíveis causas:")
+        print("   - Problemas de permissão no Docker")
+        print("   - Chrome/ChromeDriver não instalado corretamente")
+        print("   - Incompatibilidade de versões")
+        return
+
     print("Este modo busca componentes no Supabase e atualiza os preços")
     
     # Buscar componentes do Supabase
@@ -770,8 +808,6 @@ def main():
             return
         
         print(f"📦 Encontrados {len(components)} componentes no Supabase")
-        
-        scraper = HumanBehaviorScraper()
         
         for component in components:
             component_id = component['id']
