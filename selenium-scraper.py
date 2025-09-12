@@ -356,7 +356,7 @@ class HumanBehaviorScraper:
             
             # Esperar página de resultados carregar
             if not self.wait_for_page_load():
-                print("⚠️ Página de resultados pode não have carregado completamente")
+                print("⚠️ Página de resultados pode não ter carregado completamente")
             
             # Fazer scroll para garantir que produtos carregaram
             self.scroll_randomly()
@@ -568,7 +568,7 @@ class HumanBehaviorScraper:
             
             for product in product_elements[:20]:  # Verificar apenas os primeiros 20 produtos
                 try:
-                    # Verificar if é um componente individual (não PC pré-montado)
+                    # Verificar se é um componente individual (não PC pré-montado)
                     product_name = ""
                     name_selectors = [
                         "h2 a span",  # Nome do produto
@@ -798,9 +798,9 @@ def main():
 
     print("Este modo busca componentes no Supabase e atualiza os preços")
     
-    # Buscar componentes do Supabase
+    # Buscar componentes do Supabase (SEM LIMITE)
     try:
-        response = supabase.table("components").select("*").limit(2).execute()
+        response = supabase.table("components").select("*").execute()
         components = response.data
         
         if not components:
