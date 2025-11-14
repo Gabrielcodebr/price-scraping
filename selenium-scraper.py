@@ -38,53 +38,42 @@ class HumanBehaviorScraper:
         """Configura Chrome para parecer mais humano"""
         try:
             chrome_options = Options()
-        
-            # Configurações ESSENCIAIS para Docker
-            chrome_options.add_argument("--headless=new")
+            
+            # COMENTAR esta linha para VER o navegador
+            # chrome_options.add_argument("--headless=new")
+            
+            # Configurações essenciais
             chrome_options.add_argument("--no-sandbox")
-            chrome_options.add_argument("--disable-dev-shm-usage")  # Crucial para Docker
+            chrome_options.add_argument("--disable-dev-shm-usage")
             chrome_options.add_argument("--disable-gpu")
             chrome_options.add_argument("--window-size=1920,1080")
-            chrome_options.add_argument("--remote-debugging-port=9222")
-        
+            
             # Configurações para parecer um usuário real
             chrome_options.add_argument("--disable-blink-features=AutomationControlled")
-            chrome_options.add_argument("--disable-extensions")
-            chrome_options.add_argument("--disable-plugins-discovery")
-        
+            chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+            chrome_options.add_experimental_option('useAutomationExtension', False)
+            
             # User agent realista
             user_agents = [
-                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
             ]
             chrome_options.add_argument(f"--user-agent={random.choice(user_agents)}")
-        
-            # Desabilitar automação detectável
-            chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
-            chrome_options.add_experimental_option('useAutomationExtension', False)
-        
-            # Configurações de desempenho
-            chrome_options.add_argument("--disable-software-rasterizer")
-            chrome_options.add_argument("--disable-web-security")
-            chrome_options.add_argument("--allow-running-insecure-content")
-        
-            # Usar webdriver-manager para baixar automaticamente o ChromeDriver correto
+            
+            # Usar webdriver-manager
             service = Service(ChromeDriverManager().install())
-        
-            # Inicializar driver com configurações
+            
+            # Inicializar driver
             self.driver = webdriver.Chrome(service=service, options=chrome_options)
-        
+            
             # Scripts para esconder automação
             self.driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-            self.driver.execute_script("Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]})")
-            self.driver.execute_script("Object.defineProperty(navigator, 'languages', {get: () => ['pt-BR', 'pt', 'en']})")
-        
-            print("✅ Driver configurado para comportamento humano")
+            
+            print("✅ Driver Chrome configurado")
             return True
         
         except Exception as e:
             print(f"❌ Erro crítico ao configurar driver: {e}")
-            print("⚠️  Verifique se todas as dependências estão instaladas corretamente")
+            print("⚠️  Verifique se o Chrome está instalado")
             self.driver = None
             return False
     
@@ -292,8 +281,220 @@ class HumanBehaviorScraper:
         except Exception as e:
             print(f"      ⚠️ Não foi possível fechar popups: {e}")
     
+    def apply_kabum_seller_filter(self):
+        """Aplica filtro 'Vendido por Kabum' de forma humanizada"""
+        try:
+            print("🔍 Procurando filtro 'Vendido por Kabum'...")
+            
+            # Aguardar um pouco para garantir que filtros carregaram
+            self.human_delay(2, 3)
+            
+            # Seletores para o checkbox do filtro Kabum
+            filter_selectors = [
+                "input[type='checkbox'][value*='kabum']",
+                "input[type='checkbox'][name*='kabum_product']",
+                "[data-filter*='kabum'] input[type='checkbox']",
+                "input[type='checkbox']#kabum_product",
+            ]
+            
+            checkbox = None
+            for selector in filter_selectors:
+                try:
+                    checkbox = self.driver.find_element(By.CSS_SELECTOR, selector)
+                    if checkbox:
+                        break
+                except:
+                    continue
+            
+            if not checkbox:
+                print("⚠️ Filtro 'Vendido por Kabum' não encontrado, tentando por label...")
+                # Tentar encontrar pelo label
+                try:
+                    labels = self.driver.find_elements(By.TAG_NAME, "label")
+                    for label in labels:
+                        if "kabum" in label.text.lower() and "vendido" not in label.text.lower():
+                            # Encontrou o label, tentar clicar nele
+                            self.human_mouse_movement(label)
+                            self.human_delay(0.3, 0.7)
+                            label.click()
+                            print("✅ Filtro aplicado via label")
+                            self.human_delay(3, 4)
+                            return True
+                except:
+                    pass
+                
+                print("❌ Não foi possível encontrar filtro 'Vendido por Kabum'")
+                return False
+            
+            # Verificar se já está marcado
+            if checkbox.is_selected():
+                print("✅ Filtro já está aplicado")
+                return True
+            
+            # Aplicar comportamento humano antes de clicar
+            print("🖱️ Aplicando filtro de forma humanizada...")
+            self.scroll_randomly()
+            
+            # NOVO: Re-encontrar o checkbox antes de clicar (evita stale element)
+            try:
+                # Esperar um pouco antes de clicar
+                self.human_delay(0.5, 1.0)
+                
+                # Re-localizar o checkbox usando JavaScript (mais confiável)
+                self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", checkbox)
+                time.sleep(0.5)
+                
+                # Clicar usando JavaScript (mais confiável que .click())
+                self.driver.execute_script("arguments[0].click();", checkbox)
+                print("✅ Filtro 'Vendido por Kabum' aplicado")
+                
+            except Exception as e:
+                print(f"⚠️ Erro ao clicar (tentando método alternativo): {e}")
+                # Tentar clicar normalmente como fallback
+                try:
+                    checkbox.click()
+                    print("✅ Filtro aplicado (método alternativo)")
+                except:
+                    print("❌ Falha ao aplicar filtro")
+                    return False
+            
+            # Aguardar resultados atualizarem
+            print("⏳ Aguardando resultados filtrarem...")
+            self.human_delay(3, 4)
+            
+            # Esperar página atualizar
+            self.wait_for_page_load(timeout=10)
+            
+            return True
+            
+        except Exception as e:
+            print(f"❌ Erro ao aplicar filtro: {e}")
+            return False
+    
+    def get_product_url_from_container(self, container):
+        """Extrai URL do produto de um container"""
+        try:
+            # Seletores para links de produtos
+            link_selectors = [
+                "a.productLink",
+                "a[href*='/produto/']",
+                ".nameCard a",
+                "a.sc-kpDqfm"
+            ]
+            
+            for selector in link_selectors:
+                try:
+                    link = container.find_element(By.CSS_SELECTOR, selector)
+                    url = link.get_attribute('href')
+                    if url:
+                        return url
+                except:
+                    continue
+            
+            return None
+        except:
+            return None
+    
+    def check_amazon_shipping(self, product_url):
+        """Verifica se produto é enviado pela Amazon abrindo página individual"""
+        try:
+            print(f"🔍 Verificando envio do produto...")
+            print(f"   🔗 URL: {product_url}")
+            
+            # Abrir página do produto
+            self.driver.get(product_url)
+            print("   ⏳ Aguardando página carregar...")
+            self.human_delay(3, 5)
+            
+            if not self.wait_for_page_load():
+                print("   ⚠️ Página do produto não carregou")
+                return False
+            
+            print(f"   ✅ Página carregada: {self.driver.current_url}")
+            
+            # Fechar possíveis popups
+            self.close_popups()
+            
+            # NOVO: Fazer scroll para garantir que tudo carregou
+            self.driver.execute_script("window.scrollBy(0, 300);")
+            time.sleep(1)
+            
+            # Procurar por "Enviado por"
+            print("   🔍 Procurando informações de envio...")
+            
+            # Tentar encontrar TODO o texto da página primeiro
+            try:
+                body_text = self.driver.find_element(By.TAG_NAME, "body").text.lower()
+                print(f"   📄 Texto da página contém 'enviado'? {'enviado' in body_text}")
+                print(f"   📄 Texto da página contém 'amazon'? {'amazon' in body_text}")
+            except:
+                pass
+            
+            shipped_by_amazon = False
+            
+            # Estratégia 1: Buscar por seletores específicos
+            shipping_selectors = [
+                "#tabular-buybox",
+                "#tabular-buybox-truncate-0",
+                ".tabular-buybox-text",
+                "[data-feature-name='shipsFromSoldBy']",
+                ".offer-display-feature-text",
+                "#merchant-info",
+                ".offer-display-feature-text-message"
+            ]
+            
+            for selector in shipping_selectors:
+                try:
+                    elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                    print(f"   🔍 Seletor '{selector}': encontrou {len(elements)} elementos")
+                    
+                    for element in elements:
+                        if element.is_displayed():
+                            text = element.text.lower()
+                            print(f"      📝 Texto encontrado: '{text[:100]}'")
+                            
+                            # Procurar por "enviado por" e verificar se é Amazon
+                            if "enviado por" in text or "ships from" in text:
+                                print(f"      ✅ Encontrou 'enviado por'!")
+                                if "amazon" in text:
+                                    shipped_by_amazon = True
+                                    print("      ✅✅ ENVIADO PELA AMAZON!")
+                                    return True
+                                else:
+                                    print("      ⚠️ Enviado por terceiro")
+                                    return False
+                except Exception as e:
+                    print(f"      ❌ Erro no seletor '{selector}': {e}")
+                    continue
+            
+            # Estratégia 2: Procurar em todo o HTML
+            print("   🔍 Estratégia 2: Buscando no HTML completo...")
+            try:
+                page_source = self.driver.page_source.lower()
+                
+                if "enviado por amazon" in page_source or "ships from amazon" in page_source:
+                    shipped_by_amazon = True
+                    print("      ✅ Enviado pela Amazon (detectado no HTML)")
+                    return True
+                elif "enviado por" in page_source or "ships from" in page_source:
+                    print("      ⚠️ Encontrou 'enviado por' mas não é Amazon")
+                    return False
+                else:
+                    print("      ❌ Não encontrou informação de envio")
+                    return False
+            except Exception as e:
+                print(f"      ❌ Erro na busca no HTML: {e}")
+            
+            return shipped_by_amazon
+            
+        except Exception as e:
+            print(f"      ❌ Erro ao verificar envio: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+    
     def test_kabum_search(self, produto, marca=None):
-        """Teste específico para Kabum - encontra o produto mais barato"""
+        """Teste específico para Kabum - encontra o produto mais barato vendido pela Kabum"""
         print(f"\n🟦 TESTANDO KABUM: '{produto}'")
         if marca:
             print(f"🔍 Com marca: '{marca}'")
@@ -318,7 +519,7 @@ class HumanBehaviorScraper:
             # 2. Encontrar campo de busca
             print("🔍 Procurando campo de busca...")
             search_selectors = [
-                "input[placeholder*='Busque']",  # Primeiro o seletor que funcionou nos logs
+                "input[placeholder*='Busque']",
                 "#input-busca",
                 "input[data-testid='input-busca']",
                 "input[placeholder*='buscar']", 
@@ -345,7 +546,7 @@ class HumanBehaviorScraper:
                 print("❌ Erro ao digitar no campo")
                 return None
             
-            # 5. Pressionar Enter ou clicar no botão
+            # 5. Pressionar Enter
             print("🚀 Executando busca...")
             self.human_delay(0.5, 1.5)
             search_element.send_keys(Keys.ENTER)
@@ -361,10 +562,13 @@ class HumanBehaviorScraper:
             # Fazer scroll para garantir que produtos carregaram
             self.scroll_randomly()
             
-            # 7. Procurar todos os produtos na página
+            # 7. Aplicar filtro "Vendido por Kabum"
+            if not self.apply_kabum_seller_filter():
+                print("⚠️ Não foi possível aplicar filtro, continuando sem filtro...")
+            
+            # 8. Procurar todos os produtos na página
             print("🎯 Procurando produtos...")
             
-            # Primeiro, encontrar todos os produtos na página
             product_container_selectors = [
                 ".productCard",
                 "[data-testid='product-card']",
@@ -387,7 +591,7 @@ class HumanBehaviorScraper:
                 print("❌ Nenhum produto encontrado")
                 return None
             
-            # 8. Coletar todos os produtos válidos com seus preços
+            # 9. Coletar todos os produtos válidos com seus preços
             print("🔍 Coletando produtos e preços...")
             valid_products = []
             
@@ -454,10 +658,14 @@ class HumanBehaviorScraper:
                                 price_value = self.clean_price_text(price_text)
                                 
                                 if price_value > 0:
+                                    # Obter URL do produto
+                                    product_url = self.get_product_url_from_container(container)
+                                    
                                     valid_products.append({
                                         "name": product_name,
                                         "price": price_value,
                                         "price_text": price_text,
+                                        "url": product_url,
                                         "element": container
                                     })
                                     print(f"✅ Produto válido: {product_name} - R$ {price_value:.2f}")
@@ -470,30 +678,34 @@ class HumanBehaviorScraper:
                 print("❌ Nenhum produto válido encontrado")
                 return None
             
-            # 9. Encontrar o produto mais barato
+            # 10. Encontrar o produto mais barato
             valid_products.sort(key=lambda x: x["price"])
             cheapest_product = valid_products[0]
             
             product_name = cheapest_product["name"]
             price_value = cheapest_product["price"]
             price_text = cheapest_product["price_text"]
+            product_url = cheapest_product["url"] or self.driver.current_url
             
             print(f"📦 Produto mais barato: {product_name}")
             print(f"💰 Preço: R$ {price_value:.2f}")
+            print(f"🔗 URL: {product_url}")
             
             result = {
                 "site": "Kabum",
                 "produto": product_name,
                 "preco": price_value,
                 "preco_texto": price_text,
-                "url": self.driver.current_url,
+                "url": product_url,
+                "shipped_by_store": True,  # Sempre True pois filtro foi aplicado
                 "status": "sucesso"
             }
             
             print(f"🎉 KABUM RESULTADO:")
             print(f"   📦 Produto: {product_name}")
             print(f"   💰 Preço: R$ {price_value:.2f}")
-            print(f"   🌐 URL: {self.driver.current_url}")
+            print(f"   🌐 URL: {product_url}")
+            print(f"   ✅ Vendido e enviado por Kabum")
             
             return result
             
@@ -502,7 +714,7 @@ class HumanBehaviorScraper:
             return None
     
     def test_amazon_search(self, produto, marca=None):
-        """Teste específico para Amazon - encontra o produto mais barato"""
+        """Teste específico para Amazon - encontra o produto mais barato e verifica envio"""
         print(f"\n🟧 TESTANDO AMAZON: '{produto}'")
         if marca:
             print(f"🔍 Com marca: '{marca}'")
@@ -537,14 +749,14 @@ class HumanBehaviorScraper:
             # Fazer scroll para garantir que produtos carregaram
             self.scroll_randomly()
             
-            # 3. Procurar produtos - seletores para Amazon
+            # 3. Procurar produtos
             print("🎯 Procurando produtos...")
             product_selectors = [
                 "[data-component-type='s-search-result']",
                 ".s-result-item",
                 ".s-card-container",
                 ".sg-col-inner"
-            ]
+            ]              
             
             product_elements = []
             for selector in product_selectors:
@@ -571,10 +783,10 @@ class HumanBehaviorScraper:
                     # Verificar se é um componente individual (não PC pré-montado)
                     product_name = ""
                     name_selectors = [
-                        "h2 a span",  # Nome do produto
-                        ".a-size-medium.a-color-base.a-text-normal",  # Classe comum para nomes
-                        "h2 .a-text-normal",  # Outro seletor para nomes
-                        ".a-size-base-plus.a-color-base.a-text-normal"  # Nome do produto alternativo
+                        "h2 a span",
+                        ".a-size-medium.a-color-base.a-text-normal",
+                        "h2 .a-text-normal",
+                        ".a-size-base-plus.a-color-base.a-text-normal"
                     ]
                     
                     for selector in name_selectors:
@@ -594,32 +806,26 @@ class HumanBehaviorScraper:
                         "pc", "computador", "completo", "kit", "combo", "gamer", "notebook", "laptop"
                     ])
                     
-                    # Verificar se o produto corresponde exatamente ao termo de busca
+                    # Verificar se o produto corresponde ao termo de busca
                     search_words = search_term.lower().split()
                     product_name_lower = product_name.lower()
-                    
-                    # Verificar se todas as palavras da busca estão no nome do produto
                     matches_search = all(word in product_name_lower for word in search_words)
                     
-                    # Se for um componente individual e corresponde à busca, tentar extrair o preço
+                    # Se for um componente individual e corresponde à busca
                     if not is_prebuilt and matches_search:
-                        # Extrair preço usando a estrutura HTML fornecida
+                        # Extrair preço
                         price_value = 0
                         price_text = ""
                         
-                        # Estratégia 1: Extrair usando a estrutura específica fornecida
+                        # Estratégia 1: Estrutura específica da Amazon
                         try:
                             price_whole = product.find_element(By.CSS_SELECTOR, ".a-price-whole").text.strip()
                             try:
-                                # Tentar encontrar a parte decimal
                                 price_decimal = product.find_element(By.CSS_SELECTOR, ".a-price-fraction").text.strip()
                             except:
-                                # Se não encontrar .a-price-fraction, tentar .a-price-decimal
                                 try:
                                     price_decimal_elem = product.find_element(By.CSS_SELECTOR, ".a-price-decimal")
-                                    # Se é apenas a vírgula, procurar o valor decimal em outro lugar
                                     if price_decimal_elem.text.strip() == ",":
-                                        # Procurar o valor decimal após a vírgula
                                         price_html = product.get_attribute("innerHTML")
                                         decimal_match = re.search(r'<span class="a-price-decimal">,</span>\s*<span[^>]*>(\d+)</span>', price_html)
                                         if decimal_match:
@@ -633,17 +839,16 @@ class HumanBehaviorScraper:
                             
                             price_text = f"{price_whole},{price_decimal}"
                             price_value = self.clean_price_text(price_text)
-                        except Exception as e:
-                            print(f"      ⚠️ Erro na extração específica: {e}")
-                            # Estratégia 2: Se não funcionar, tentar métodos alternativos
+                        except:
+                            # Estratégia 2: Métodos alternativos
                             price_selectors = [
-                                ".a-price[data-a-size='xl'] .a-offscreen",  # Preço com símbolo
-                                ".a-price .a-offscreen",  # Preço com símbolo (alternativo)
-                                ".a-price-whole",  # Parte inteira do preço
-                                "[data-a-size='xl'] .a-price-whole",  # Preço em destaque
-                                ".a-price .a-price-whole",  # Parte inteira do preço dentro de .a-price
-                                ".a-price[data-a-size='l']",  # Preço grande
-                                ".a-price[data-a-size='m']",  # Preço médio,
+                                ".a-price[data-a-size='xl'] .a-offscreen",
+                                ".a-price .a-offscreen",
+                                ".a-price-whole",
+                                "[data-a-size='xl'] .a-price-whole",
+                                ".a-price .a-price-whole",
+                                ".a-price[data-a-size='l']",
+                                ".a-price[data-a-size='m']",
                             ]
                             
                             for selector in price_selectors:
@@ -661,18 +866,49 @@ class HumanBehaviorScraper:
                                 except:
                                     continue
                         
-                        # Se encontrou um preço válido, adicionar à lista
+                        # Se encontrou preço válido, extrair URL do produto
                         if price_value > 0:
-                            valid_products.append({
-                                "name": product_name,
-                                "price": price_value,
-                                "price_text": price_text,
-                                "element": product
-                            })
-                            print(f"✅ Produto válido: {product_name} - R$ {price_value:.2f}")
+                            print(f"      💰 Preço encontrado: R$ {price_value:.2f}")
+                            print(f"      📦 Nome: {product_name}")
+                            
+                            product_url = None
+                            
+                            # Tentar múltiplos seletores para o link
+                            link_selectors = [
+                                "h2 a",
+                                "a.a-link-normal",
+                                ".a-link-normal.s-no-outline",
+                                "a[href*='/dp/']",
+                                ".s-image"
+                            ]
+                            
+                            for link_selector in link_selectors:
+                                try:
+                                    link_element = product.find_element(By.CSS_SELECTOR, link_selector)
+                                    product_url = link_element.get_attribute('href')
+                                    if product_url and '/dp/' in product_url:
+                                        print(f"      ✅ URL encontrada com '{link_selector}': {product_url[:80]}...")
+                                        break
+                                except:
+                                    continue
+                            
+                            if not product_url:
+                                print(f"      ❌ Nenhuma URL encontrada para este produto")
+                                print(f"      🔍 HTML do card: {product.get_attribute('outerHTML')[:200]}...")
+                            
+                            if product_url:
+                                valid_products.append({
+                                    "name": product_name,
+                                    "price": price_value,
+                                    "price_text": price_text,
+                                    "url": product_url,
+                                    "element": product
+                                })
+                                print(f"✅ Produto válido COMPLETO: {product_name} - R$ {price_value:.2f}")
+                            else:
+                                print(f"⚠️ Produto descartado (sem URL): {product_name}")
                     
                 except Exception as e:
-                    print(f"      ⚠️ Erro ao analisar produto: {e}")
                     continue
             
             if not valid_products:
@@ -686,23 +922,34 @@ class HumanBehaviorScraper:
             product_name = cheapest_product["name"]
             price_value = cheapest_product["price"]
             price_text = cheapest_product["price_text"]
+            product_url = cheapest_product["url"]
             
             print(f"📦 Produto mais barato: {product_name}")
             print(f"💰 Preço: R$ {price_value:.2f}")
+            print(f"🔗 URL: {product_url}")
+            
+            # 6. Verificar quem envia o produto
+            print("\n🔍 Verificando informações de envio...")
+            shipped_by_amazon = self.check_amazon_shipping(product_url)
             
             result = {
                 "site": "Amazon",
                 "produto": product_name,
                 "preco": price_value,
                 "preco_texto": price_text,
-                "url": self.driver.current_url,
+                "url": product_url,
+                "shipped_by_store": shipped_by_amazon,
                 "status": "sucesso"
             }
             
             print(f"🎉 AMAZON RESULTADO:")
             print(f"   📦 Produto: {product_name}")
             print(f"   💰 Preço: R$ {price_value:.2f}")
-            print(f"   🌐 URL: {self.driver.current_url}")
+            print(f"   🌐 URL: {product_url}")
+            if shipped_by_amazon:
+                print(f"   ✅ Enviado pela Amazon")
+            else:
+                print(f"   ⚠️ Envio Externo")
             
             return result
             
@@ -744,12 +991,13 @@ class HumanBehaviorScraper:
         print("-" * 40)
         
         if 'kabum' in results and results['kabum']['preco']:
-            print(f"🟦 Kabum: R$ {results['kabum']['preco']:.2f}")
+            print(f"🟦 Kabum: R$ {results['kabum']['preco']:.2f} (Vendido por Kabum)")
         else:
             print("🟦 Kabum: ❌ Não encontrado")
             
         if 'amazon' in results and results['amazon']['preco']:
-            print(f"🟧 Amazon: R$ {results['amazon']['preco']:.2f}")
+            shipping_status = "Enviado pela Amazon" if results['amazon']['shipped_by_store'] else "Envio Externo"
+            print(f"🟧 Amazon: R$ {results['amazon']['preco']:.2f} ({shipping_status})")
         else:
             print("🟧 Amazon: ❌ Não encontrado")
         
@@ -824,9 +1072,9 @@ def main():
             best_price_data = component.get('best_price', {})
             if not best_price_data:
                 best_price_data = {
-                    "best": {"url": None, "price": None, "store": None},
-                    "kabum": {"url": None, "found": False, "price": None},
-                    "amazon": {"url": None, "found": False, "price": None},
+                    "best": {"url": None, "price": None, "store": None, "shipped_by_store": None},
+                    "kabum": {"url": None, "found": False, "price": None, "shipped_by_store": None},
+                    "amazon": {"url": None, "found": False, "price": None, "shipped_by_store": None},
                     "updated_at": None
                 }
             
@@ -835,14 +1083,16 @@ def main():
                 best_price_data['kabum'] = {
                     "url": results['kabum']['url'],
                     "found": True,
-                    "price": results['kabum']['preco']
+                    "price": results['kabum']['preco'],
+                    "shipped_by_store": results['kabum']['shipped_by_store']
                 }
             
             if 'amazon' in results and results['amazon']['preco']:
                 best_price_data['amazon'] = {
                     "url": results['amazon']['url'],
                     "found": True,
-                    "price": results['amazon']['preco']
+                    "price": results['amazon']['preco'],
+                    "shipped_by_store": results['amazon']['shipped_by_store']
                 }
             
             # Determinar o melhor preço
@@ -857,7 +1107,8 @@ def main():
                 best_price_data['best'] = {
                     "url": results[best_store]['url'],
                     "price": best_price,
-                    "store": best_store
+                    "store": best_store,
+                    "shipped_by_store": results[best_store]['shipped_by_store']
                 }
             
             # Atualizar data de atualização
