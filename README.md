@@ -7,22 +7,6 @@
 
 > **Scraper automatizado e inteligente** para monitorar preços de componentes de PC nas principais lojas brasileiras (Kabum e Amazon BR).
 
-## 📋 Índice
-
-- [Sobre](#-sobre)
-- [Features](#-features)
-- [Tecnologias](#-tecnologias)
-- [Pré-requisitos](#-pré-requisitos)
-- [Instalação](#-instalação)
-- [Configuração](#-configuração)
-- [Como Usar](#-como-usar)
-- [Como Funciona](#-como-funciona)
-- [Troubleshooting](#-troubleshooting)
-- [Contribuindo](#-contribuindo)
-- [Licença](#-licença)
-
----
-
 ## 📖 Sobre
 
 Este scraper foi desenvolvido para automatizar a busca e comparação de preços de componentes de hardware (placas de vídeo, processadores, SSDs, memórias RAM, etc.) nas principais lojas online do Brasil.
