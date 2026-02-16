@@ -28,20 +28,6 @@ EXCLUSION_KEYWORDS = [
     'acessorio', 'cooler', 'ventoinha', 'base', 'case', 'gabinete'
 ]
 
-# Palavras genéricas que devem ser ignoradas na comparação
-GENERIC_WORDS = [
-    'radeon', 'geforce', 'ryzen', 'core', 'intel', 'amd', 'nvidia',
-    'processador', 'processor', 'cpu', 'gpu', 'ssd', 'hdd', 'memoria',
-    'memory', 'ram', 'placa', 'video', 'mae', 'motherboard', 'fonte',
-    'power', 'supply', 'psu', 'ultra', 'gaming', 'oc', 'edition',
-    'series', 'tri', 'dual', 'fan', 'fans', 'ventilador', 'refrigeracao',
-    'western', 'digital', 'kingston', 'corsair', 'crucial', 'samsung',
-    'seagate', 'wd', 'xpg', 'adata', 'sandisk', 'gskill', 'msi',
-    'asus', 'gigabyte', 'asrock', 'evga', 'nzxt', 'fractal', 'design',
-    'cooler', 'master', 'rise', 'mode', 'com', 'with', 'de', 'da', 'do',
-    'para', 'e', 'and', 'the', 'a', 'an', 'in', 'on', 'at', 'to', 'for'
-]
-
 
 class PriceScraper:
     """Web scraper para buscar preços em Kabum e Amazon com comportamento humanizado"""
@@ -156,40 +142,15 @@ class PriceScraper:
         """Delay humanizado"""
         time.sleep(random.uniform(min_sec, max_sec))
     
-    def progressive_scroll(self, max_scrolls=8):
-        """Scroll progressivo para carregar todos os produtos (lazy loading)"""
+    def scroll_randomly(self):
+        """Scroll aleatório para simular leitura"""
         try:
-            last_height = self.driver.execute_script("return document.body.scrollHeight")
-            scrolls_without_change = 0
-            
-            for i in range(max_scrolls):
-                # Scroll até o final da página
-                self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-                time.sleep(random.uniform(1.5, 2.5))
-                
-                # Verificar se a altura mudou (novos produtos carregaram)
-                new_height = self.driver.execute_script("return document.body.scrollHeight")
-                
-                if new_height == last_height:
-                    scrolls_without_change += 1
-                    # Se não mudou em 2 scrolls consecutivos, provavelmente carregou tudo
-                    if scrolls_without_change >= 2:
-                        break
-                else:
-                    scrolls_without_change = 0
-                    last_height = new_height
-                
-                # Scroll um pouco para trás (comportamento humano)
-                if random.random() < 0.3:
-                    self.driver.execute_script("window.scrollBy(0, -200);")
-                    time.sleep(random.uniform(0.3, 0.7))
-            
-            # Scroll de volta ao topo
-            self.driver.execute_script("window.scrollTo(0, 0);")
-            time.sleep(random.uniform(0.5, 1.0))
-            
-        except Exception as e:
-            print(f"ERRO: Falha no scroll progressivo - {e}")
+            if random.random() < 0.3:
+                scroll_amount = random.randint(100, 400)
+                self.driver.execute_script(f"window.scrollBy(0, {scroll_amount});")
+                time.sleep(random.uniform(0.5, 1.5))
+        except:
+            pass
     
     def clean_price_text(self, text):
         """Extrai valor numérico de texto de preço"""
@@ -276,78 +237,18 @@ class PriceScraper:
         except:
             pass
     
-    def extract_important_tokens(self, model_text):
-        """
-        Extrai tokens importantes do modelo (números, códigos alfanuméricos).
-        Remove palavras genéricas.
-        """
+    def normalize_model(self, model_text):
+        """Normaliza texto do modelo para comparação"""
         if not model_text:
-            return []
-        
-        # Converter para minúsculas e remover pontuação extra
-        text_lower = model_text.lower()
-        
-        # Separar por espaços, hífens, underscores
-        tokens = re.split(r'[\s\-_]+', text_lower)
-        
-        important_tokens = []
-        for token in tokens:
-            # Remover tokens vazios
-            if not token:
-                continue
-            
-            # Ignorar palavras genéricas
-            if token in GENERIC_WORDS:
-                continue
-            
-            # Manter tokens que contêm números OU são códigos alfanuméricos significativos
-            # Exemplos: "9070", "7600x", "lpx", "z690", "b550m", "13600k"
-            if re.search(r'\d', token) or len(token) >= 3:
-                important_tokens.append(token)
-        
-        return important_tokens
-    
-    def tokens_match(self, product_name, search_tokens, strict=True):
-        """
-        Verifica se os tokens de busca estão presentes no nome do produto.
-        
-        strict=True: Todos os tokens devem estar presentes E não pode ter tokens extras significativos
-        strict=False: Apenas verifica se todos os tokens estão presentes
-        """
-        if not product_name or not search_tokens:
-            return False
-        
-        product_lower = product_name.lower()
-        product_tokens = self.extract_important_tokens(product_name)
-        
-        # Verificar se TODOS os tokens de busca estão no produto
-        for token in search_tokens:
-            if token not in product_lower:
-                return False
-        
-        if strict:
-            # Verificar se o produto não tem tokens extras significativos
-            # Exemplo: busca "9070", não pode aceitar "9070 XT"
-            extra_tokens = set(product_tokens) - set(search_tokens)
-            
-            # Filtrar tokens extras que são realmente significativos
-            # (ignorar palavras como "gaming", "oc", "edition", etc)
-            significant_extra = []
-            for token in extra_tokens:
-                # Token é significativo se tem números ou é uma sigla curta
-                if re.search(r'\d', token) or (len(token) <= 3 and token not in GENERIC_WORDS):
-                    significant_extra.append(token)
-            
-            # Se há tokens significativos extras, pode ser outro produto
-            if significant_extra:
-                return False
-        
-        return True
+            return ""
+        # Remove hífens, espaços extras e converte para minúsculas
+        normalized = re.sub(r'[-\s]+', '', model_text.lower())
+        return normalized
     
     def is_exact_product_match(self, product_name, search_model, search_brand=None):
         """
         Valida se o produto encontrado corresponde exatamente ao modelo buscado.
-        Usa validação inteligente por tokens.
+        Aceita variações pequenas mas rejeita acessórios e produtos similares.
         """
         if not product_name or not search_model:
             return False
@@ -359,23 +260,17 @@ class PriceScraper:
             if keyword in product_name_lower:
                 return False
         
-        # Extrair tokens importantes do modelo de busca
-        search_tokens = self.extract_important_tokens(search_model)
+        # Normalizar para comparação
+        normalized_product = self.normalize_model(product_name)
+        normalized_search = self.normalize_model(search_model)
         
-        # Se não há tokens importantes, usar busca tradicional
-        if not search_tokens:
-            if search_model.lower() not in product_name_lower:
-                return False
-        else:
-            # Validar usando tokens (strict=True para evitar variantes)
-            if not self.tokens_match(product_name, search_tokens, strict=True):
-                return False
+        # O modelo normalizado deve estar presente no nome do produto
+        if normalized_search not in normalized_product:
+            return False
         
         # Se tem marca, verificar se está presente
         if search_brand:
-            brand_tokens = self.extract_important_tokens(search_brand)
-            # Para marca, usar strict=False (só precisa estar presente)
-            if brand_tokens and not self.tokens_match(product_name, brand_tokens, strict=False):
+            if search_brand.lower() not in product_name_lower:
                 return False
         
         return True
@@ -397,6 +292,8 @@ class PriceScraper:
                 if not self.wait_for_page_load():
                     print("ERRO: Kabum nao carregou")
                     return None
+            
+            self.scroll_randomly()
             
             # Encontrar campo de busca
             search_selectors = [
@@ -432,8 +329,7 @@ class PriceScraper:
             if not self.wait_for_page_load():
                 pass
             
-            # SCROLL PROGRESSIVO para carregar TODOS os produtos
-            self.progressive_scroll(max_scrolls=8)
+            self.scroll_randomly()
             
             # Buscar containers de produtos
             product_container_selectors = [
@@ -457,11 +353,8 @@ class PriceScraper:
                 print("ERRO: Nenhum produto encontrado na Kabum")
                 return None
             
-            print(f"[DEBUG] Total de produtos encontrados na pagina: {len(product_containers)}")
-            
             # Coletar produtos válidos
             valid_products = []
-            rejected_count = 0
             
             for container in product_containers:
                 try:
@@ -493,7 +386,6 @@ class PriceScraper:
                     
                     # Validar se é o produto exato usando o modelo
                     if modelo and not self.is_exact_product_match(product_name, modelo, marca):
-                        rejected_count += 1
                         continue
                     
                     # Se não tem modelo, validar por nome completo
@@ -502,12 +394,10 @@ class PriceScraper:
                         product_name_lower = product_name.lower()
                         
                         if not all(word in product_name_lower for word in search_words):
-                            rejected_count += 1
                             continue
                         
                         # Verificar palavras de exclusão
                         if any(keyword in product_name_lower for keyword in EXCLUSION_KEYWORDS):
-                            rejected_count += 1
                             continue
                     
                     # Buscar preço
@@ -546,8 +436,6 @@ class PriceScraper:
                 
                 except Exception as e:
                     continue
-            
-            print(f"[DEBUG] Produtos validos: {len(valid_products)} | Rejeitados: {rejected_count}")
             
             if not valid_products:
                 print("[KABUM] Produto nao encontrado")
@@ -600,8 +488,7 @@ class PriceScraper:
             if not self.wait_for_page_load():
                 pass
             
-            # SCROLL PROGRESSIVO para carregar TODOS os produtos
-            self.progressive_scroll(max_scrolls=6)
+            self.scroll_randomly()
             
             # Buscar produtos
             product_selectors = [
@@ -625,13 +512,10 @@ class PriceScraper:
                 print("ERRO: Nenhum produto encontrado na Amazon")
                 return None
             
-            print(f"[DEBUG] Total de produtos encontrados na pagina: {len(product_elements)}")
-            
             # Coletar produtos válidos
             valid_products = []
-            rejected_count = 0
             
-            for product in product_elements[:30]:  # Verificar mais produtos agora
+            for product in product_elements[:20]:
                 try:
                     # Obter nome
                     name_selectors = [
@@ -656,7 +540,6 @@ class PriceScraper:
                     
                     # Validar se é o produto exato
                     if modelo and not self.is_exact_product_match(product_name, modelo, marca):
-                        rejected_count += 1
                         continue
                     
                     # Se não tem modelo, validar por nome completo
@@ -665,12 +548,10 @@ class PriceScraper:
                         product_name_lower = product_name.lower()
                         
                         if not all(word in product_name_lower for word in search_words):
-                            rejected_count += 1
                             continue
                         
                         # Verificar palavras de exclusão
                         if any(keyword in product_name_lower for keyword in EXCLUSION_KEYWORDS):
-                            rejected_count += 1
                             continue
                     
                     # Extrair preço
@@ -736,8 +617,6 @@ class PriceScraper:
                 
                 except Exception as e:
                     continue
-            
-            print(f"[DEBUG] Produtos validos: {len(valid_products)} | Rejeitados: {rejected_count}")
             
             if not valid_products:
                 print("[AMAZON] Produto nao encontrado")
