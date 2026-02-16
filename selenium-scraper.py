@@ -21,25 +21,36 @@ SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# Palavras que indicam que não é o produto puro
+# Palavras que indicam que não é o produto puro (kits, acessórios, PCs completos)
 EXCLUSION_KEYWORDS = [
-    'pc ', 'computador', 'completo', 'kit', 'combo', 'gamer', 'notebook', 'laptop',
+    'pc ', 'computador', 'completo', 'kit', 'combo', 'notebook', 'laptop',
+    'desktop', 'workstation', 'all-in-one', 'torre', 'cpu completo',
     'suporte', 'bracket', 'shield', 'parafuso', 'cabo', 'adaptador', 'extensor',
     'acessorio', 'cooler', 'ventoinha', 'base', 'case', 'gabinete'
 ]
 
-# Palavras genéricas que devem ser ignoradas na comparação
+# Sufixos que indicam PRODUTO DIFERENTE (não podem aparecer se não estão no modelo buscado)
+VARIANT_SUFFIXES = [
+    'xt', 'ti', 'super', 'kf', 'f', 'ultra', 'max', 'pro',
+    'plus', 'boost', 'overclocked', 'turbo', 'extreme', 'premium',
+    'x3d', '3d', 's', 'g'  # Adicionados para Ryzen X3D e outras variantes
+]
+
+# Palavras genéricas que podem aparecer sem problema (são apenas marketing)
 GENERIC_WORDS = [
     'radeon', 'geforce', 'ryzen', 'core', 'intel', 'amd', 'nvidia',
     'processador', 'processor', 'cpu', 'gpu', 'ssd', 'hdd', 'memoria',
     'memory', 'ram', 'placa', 'video', 'mae', 'motherboard', 'fonte',
-    'power', 'supply', 'psu', 'ultra', 'gaming', 'oc', 'edition',
+    'power', 'supply', 'psu', 'gaming', 'oc', 'edition', 'overclock',
     'series', 'tri', 'dual', 'fan', 'fans', 'ventilador', 'refrigeracao',
     'western', 'digital', 'kingston', 'corsair', 'crucial', 'samsung',
     'seagate', 'wd', 'xpg', 'adata', 'sandisk', 'gskill', 'msi',
     'asus', 'gigabyte', 'asrock', 'evga', 'nzxt', 'fractal', 'design',
     'cooler', 'master', 'rise', 'mode', 'com', 'with', 'de', 'da', 'do',
-    'para', 'e', 'and', 'the', 'a', 'an', 'in', 'on', 'at', 'to', 'for'
+    'para', 'e', 'and', 'the', 'a', 'an', 'in', 'on', 'at', 'to', 'for',
+    'black', 'white', 'rgb', 'argb', 'led', 'custom', 'windforce', 'phantom',
+    'strix', 'tuf', 'rog', 'aorus', 'ventus', 'eagle', 'armor', 'twin', 'frozr',
+    'nitro', 'pulse', 'red', 'devil', 'v2', 'v1', 'ex', 'lx', 'lpx'
 ]
 
 
@@ -276,106 +287,185 @@ class PriceScraper:
         except:
             pass
     
-    def extract_important_tokens(self, model_text):
+    def extract_storage_capacity(self, text):
         """
-        Extrai tokens importantes do modelo (números, códigos alfanuméricos).
-        Remove palavras genéricas.
+        Extrai capacidade de armazenamento do texto.
+        Retorna valor normalizado em GB para comparação.
+        
+        Exemplos:
+        - "1TB" → 1024
+        - "512GB" → 512
+        - "2 tb" → 2048
         """
-        if not model_text:
+        if not text:
+            return None
+        
+        text_lower = text.lower()
+        
+        # Procurar padrões como "1tb", "512gb", "2 tb", etc
+        # Aceita espaço opcional entre número e unidade
+        match = re.search(r'(\d+)\s*(tb|gb)', text_lower)
+        
+        if match:
+            value = int(match.group(1))
+            unit = match.group(2)
+            
+            # Normalizar tudo para GB
+            if unit == 'tb':
+                return value * 1024  # converter TB para GB
+            return value  # já está em GB
+        
+        return None
+    
+    def extract_key_tokens(self, text):
+        """
+        Extrai tokens-chave de um texto (números e códigos alfanuméricos importantes).
+        Retorna tokens normalizados (lowercase, sem hífens/underscores).
+        """
+        if not text:
             return []
         
-        # Converter para minúsculas e remover pontuação extra
-        text_lower = model_text.lower()
+        # Normalizar: lowercase
+        text_lower = text.lower()
         
         # Separar por espaços, hífens, underscores
-        tokens = re.split(r'[\s\-_]+', text_lower)
+        # Mas manter hífens em códigos alfanuméricos específicos (ex: RM-WA-FB-ARGB)
+        tokens = re.split(r'[\s]+', text_lower)
         
-        important_tokens = []
+        key_tokens = []
         for token in tokens:
-            # Remover tokens vazios
-            if not token:
+            # Remover hífens/underscores do token para normalização
+            normalized_token = token.replace('-', '').replace('_', '')
+            
+            # Ignorar tokens vazios
+            if not normalized_token:
                 continue
             
             # Ignorar palavras genéricas
-            if token in GENERIC_WORDS:
+            if normalized_token in GENERIC_WORDS:
                 continue
             
-            # Manter tokens que contêm números OU são códigos alfanuméricos significativos
-            # Exemplos: "9070", "7600x", "lpx", "z690", "b550m", "13600k"
-            if re.search(r'\d', token) or len(token) >= 3:
-                important_tokens.append(token)
+            # Manter tokens que:
+            # - Contêm números (ex: "9070", "13600k", "32gb", "3200mhz")
+            # - São códigos curtos importantes (ex: "xt", "ti", "kf", "x3d")
+            # - São códigos alfanuméricos com hífens (ex: "rmwafbargb" de "RM-WA-FB-ARGB")
+            if re.search(r'\d', normalized_token):
+                key_tokens.append(normalized_token)
+            elif normalized_token in VARIANT_SUFFIXES:
+                # Sufixos de variante são importantes!
+                key_tokens.append(normalized_token)
+            elif len(normalized_token) >= 6 and re.search(r'[a-z]+[0-9]+|[0-9]+[a-z]+', normalized_token):
+                # Códigos alfanuméricos mistos (letras e números)
+                key_tokens.append(normalized_token)
         
-        return important_tokens
-    
-    def tokens_match(self, product_name, search_tokens, strict=True):
-        """
-        Verifica se os tokens de busca estão presentes no nome do produto.
-        
-        strict=True: Todos os tokens devem estar presentes E não pode ter tokens extras significativos
-        strict=False: Apenas verifica se todos os tokens estão presentes
-        """
-        if not product_name or not search_tokens:
-            return False
-        
-        product_lower = product_name.lower()
-        product_tokens = self.extract_important_tokens(product_name)
-        
-        # Verificar se TODOS os tokens de busca estão no produto
-        for token in search_tokens:
-            if token not in product_lower:
-                return False
-        
-        if strict:
-            # Verificar se o produto não tem tokens extras significativos
-            # Exemplo: busca "9070", não pode aceitar "9070 XT"
-            extra_tokens = set(product_tokens) - set(search_tokens)
-            
-            # Filtrar tokens extras que são realmente significativos
-            # (ignorar palavras como "gaming", "oc", "edition", etc)
-            significant_extra = []
-            for token in extra_tokens:
-                # Token é significativo se tem números ou é uma sigla curta
-                if re.search(r'\d', token) or (len(token) <= 3 and token not in GENERIC_WORDS):
-                    significant_extra.append(token)
-            
-            # Se há tokens significativos extras, pode ser outro produto
-            if significant_extra:
-                return False
-        
-        return True
+        return key_tokens
     
     def is_exact_product_match(self, product_name, search_model, search_brand=None):
         """
         Valida se o produto encontrado corresponde exatamente ao modelo buscado.
-        Usa validação inteligente por tokens.
+        
+        Lógica:
+        1. Verifica palavras de exclusão (kits, acessórios, PCs completos)
+        2. Extrai tokens-chave do modelo buscado e do produto
+        3. TODOS os tokens do modelo buscado devem estar no produto
+        4. O produto NÃO pode ter tokens de variante que não estão no modelo buscado
+        5. Valida capacidade de armazenamento (GB/TB) se presente
+        
+        Exemplos:
+        - Busca "RX 9070" → Aceita "Radeon RX 9070 Gaming OC"
+        - Busca "RX 9070" → REJEITA "RX 9070 XT" (tem token extra "xt")
+        - Busca "7600X" → REJEITA "7600X3D" (tem token extra "x3d")
+        - Busca "Barracuda 1TB" → REJEITA "Barracuda 500GB" (capacidade diferente)
         """
         if not product_name or not search_model:
             return False
         
         product_name_lower = product_name.lower()
         
-        # Verificar palavras de exclusão
+        # 1. Verificar palavras de exclusão (kits, acessórios, PCs completos)
         for keyword in EXCLUSION_KEYWORDS:
             if keyword in product_name_lower:
                 return False
         
-        # Extrair tokens importantes do modelo de busca
-        search_tokens = self.extract_important_tokens(search_model)
+        # 2. Extrair tokens-chave
+        search_tokens = self.extract_key_tokens(search_model)
+        product_tokens = self.extract_key_tokens(product_name)
         
-        # Se não há tokens importantes, usar busca tradicional
+        # Se não há tokens de busca, fazer validação simples por substring
         if not search_tokens:
-            if search_model.lower() not in product_name_lower:
-                return False
-        else:
-            # Validar usando tokens (strict=True para evitar variantes)
-            if not self.tokens_match(product_name, search_tokens, strict=True):
+            return search_model.lower() in product_name_lower
+        
+        # 3. TODOS os tokens de busca devem estar no produto
+        # Normalizar para comparação (remover hífens)
+        product_name_normalized = product_name_lower.replace('-', '').replace('_', '')
+        
+        for token in search_tokens:
+            if token not in product_name_normalized:
                 return False
         
-        # Se tem marca, verificar se está presente
+        # 4. Verificar se há tokens de variante extras no produto
+        # Exemplo: buscar "7600x" não pode aceitar produto com "x3d" se "x3d" não está na busca
+        search_variants = [t for t in search_tokens if t in VARIANT_SUFFIXES]
+        product_variants = [t for t in product_tokens if t in VARIANT_SUFFIXES]
+        
+        # Se o produto tem variantes que não estão na busca, rejeitar
+        for variant in product_variants:
+            if variant not in search_variants:
+                return False
+        
+        # 5. Verificar tokens numéricos extras
+        # Exemplo: buscar "9070" não pode aceitar produto com "9070xt" como um token único
+        search_numeric = [t for t in search_tokens if re.search(r'\d', t)]
+        product_numeric = [t for t in product_tokens if re.search(r'\d', t)]
+        
+        # Para cada token numérico da busca, verificar se está presente no produto
+        for search_num in search_numeric:
+            # Verificar se existe um token no produto que seja similar mas diferente
+            # Ex: busca "9070" mas produto tem "9070xt"
+            found_match = False
+            for prod_num in product_numeric:
+                if search_num == prod_num:
+                    found_match = True
+                    break
+                # Se o produto tem um token que COMEÇA com o número buscado mas tem sufixo
+                # Ex: busca "9070", produto tem "9070xt"
+                if prod_num.startswith(search_num) and len(prod_num) > len(search_num):
+                    # Verificar se o sufixo é uma variante importante
+                    suffix = prod_num[len(search_num):]
+                    if suffix in VARIANT_SUFFIXES:
+                        # É uma variante diferente! Rejeitar
+                        return False
+            
+            if not found_match:
+                # O token numérico não foi encontrado exatamente
+                # Pode estar combinado com texto. Verificar no nome normalizado.
+                if search_num not in product_name_normalized:
+                    return False
+                
+                # NOVO: Verificar se o número está grudado com variante no meio do texto
+                # Ex: busca "9070" mas produto tem "rx9070xt" ou "rtx5060ti"
+                for variant in VARIANT_SUFFIXES:
+                    # Procurar padrões onde número está grudado com variante
+                    pattern = search_num + variant
+                    if pattern in product_name_normalized:
+                        # Verificar se essa variante NÃO está na busca original
+                        if variant not in [t for t in search_tokens if t in VARIANT_SUFFIXES]:
+                            # Número grudado com variante que não está na busca!
+                            return False
+        
+        # 6. VALIDAÇÃO DE CAPACIDADE DE ARMAZENAMENTO
+        # Se a busca menciona capacidade (ex: "1TB"), o produto DEVE ter a mesma capacidade
+        search_capacity = self.extract_storage_capacity(search_model)
+        product_capacity = self.extract_storage_capacity(product_name)
+        
+        if search_capacity is not None:
+            # Se a busca tem capacidade especificada, o produto DEVE ter exatamente a mesma
+            if product_capacity is None or product_capacity != search_capacity:
+                return False
+        
+        # 7. Se tem marca, verificar se está presente
         if search_brand:
-            brand_tokens = self.extract_important_tokens(search_brand)
-            # Para marca, usar strict=False (só precisa estar presente)
-            if brand_tokens and not self.tokens_match(product_name, brand_tokens, strict=False):
+            if search_brand.lower() not in product_name_lower:
                 return False
         
         return True
@@ -387,6 +477,8 @@ class PriceScraper:
         modelo = component.get('model')
         
         print(f"\n[KABUM] Buscando: {produto}")
+        if modelo:
+            print(f"[KABUM] Modelo para validacao: {modelo}")
         
         try:
             # Navegar para Kabum
@@ -433,6 +525,7 @@ class PriceScraper:
                 pass
             
             # SCROLL PROGRESSIVO para carregar TODOS os produtos
+            print("[KABUM] Fazendo scroll progressivo...")
             self.progressive_scroll(max_scrolls=8)
             
             # Buscar containers de produtos
@@ -457,7 +550,7 @@ class PriceScraper:
                 print("ERRO: Nenhum produto encontrado na Kabum")
                 return None
             
-            print(f"[DEBUG] Total de produtos encontrados na pagina: {len(product_containers)}")
+            print(f"[KABUM] Total de produtos na pagina: {len(product_containers)}")
             
             # Coletar produtos válidos
             valid_products = []
@@ -547,7 +640,7 @@ class PriceScraper:
                 except Exception as e:
                     continue
             
-            print(f"[DEBUG] Produtos validos: {len(valid_products)} | Rejeitados: {rejected_count}")
+            print(f"[KABUM] Produtos validos: {len(valid_products)} | Rejeitados: {rejected_count}")
             
             if not valid_products:
                 print("[KABUM] Produto nao encontrado")
@@ -556,6 +649,11 @@ class PriceScraper:
             # Retornar o mais barato
             valid_products.sort(key=lambda x: x["price"])
             cheapest = valid_products[0]
+            
+            # Mostrar top 3 para debug
+            print(f"[KABUM] Top 3 precos encontrados:")
+            for i, p in enumerate(valid_products[:3], 1):
+                print(f"  {i}. R$ {p['price']:.2f} - {p['name'][:60]}...")
             
             result = {
                 "site": "Kabum",
@@ -566,7 +664,7 @@ class PriceScraper:
                 "status": "sucesso"
             }
             
-            print(f"[KABUM] Encontrado: {cheapest['name']} - R$ {cheapest['price']:.2f}")
+            print(f"[KABUM] SELECIONADO: {cheapest['name']} - R$ {cheapest['price']:.2f}")
             
             return result
             
@@ -581,6 +679,8 @@ class PriceScraper:
         modelo = component.get('model')
         
         print(f"\n[AMAZON] Buscando: {produto}")
+        if modelo:
+            print(f"[AMAZON] Modelo para validacao: {modelo}")
         
         try:
             # Navegar diretamente para busca
@@ -601,6 +701,7 @@ class PriceScraper:
                 pass
             
             # SCROLL PROGRESSIVO para carregar TODOS os produtos
+            print("[AMAZON] Fazendo scroll progressivo...")
             self.progressive_scroll(max_scrolls=6)
             
             # Buscar produtos
@@ -625,13 +726,13 @@ class PriceScraper:
                 print("ERRO: Nenhum produto encontrado na Amazon")
                 return None
             
-            print(f"[DEBUG] Total de produtos encontrados na pagina: {len(product_elements)}")
+            print(f"[AMAZON] Total de produtos na pagina: {len(product_elements)}")
             
             # Coletar produtos válidos
             valid_products = []
             rejected_count = 0
             
-            for product in product_elements[:30]:  # Verificar mais produtos agora
+            for product in product_elements[:40]:  # Verificar mais produtos
                 try:
                     # Obter nome
                     name_selectors = [
@@ -737,7 +838,7 @@ class PriceScraper:
                 except Exception as e:
                     continue
             
-            print(f"[DEBUG] Produtos validos: {len(valid_products)} | Rejeitados: {rejected_count}")
+            print(f"[AMAZON] Produtos validos: {len(valid_products)} | Rejeitados: {rejected_count}")
             
             if not valid_products:
                 print("[AMAZON] Produto nao encontrado")
@@ -746,6 +847,11 @@ class PriceScraper:
             # Retornar o mais barato
             valid_products.sort(key=lambda x: x["price"])
             cheapest = valid_products[0]
+            
+            # Mostrar top 3 para debug
+            print(f"[AMAZON] Top 3 precos encontrados:")
+            for i, p in enumerate(valid_products[:3], 1):
+                print(f"  {i}. R$ {p['price']:.2f} - {p['name'][:60]}...")
             
             result = {
                 "site": "Amazon",
@@ -756,7 +862,7 @@ class PriceScraper:
                 "status": "sucesso"
             }
             
-            print(f"[AMAZON] Encontrado: {cheapest['name']} - R$ {cheapest['price']:.2f}")
+            print(f"[AMAZON] SELECIONADO: {cheapest['name']} - R$ {cheapest['price']:.2f}")
             
             return result
             
