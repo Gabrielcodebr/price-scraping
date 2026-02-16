@@ -2,9 +2,9 @@
 
 run:
 
-python selenium-scraper.py (Oficial)
+python selenium-scraper.py (Oficial - pode haver erros)
 
-python scraper-backup.py (Backup de versão funcional)
+python scraper-backup.py (Backup de versão funcional - Já refatorada)
 
 docker-compose down
 docker-compose build --no-cache
