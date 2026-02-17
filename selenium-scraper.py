@@ -22,21 +22,23 @@ SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # Palavras que indicam que não é o produto puro (kits, acessórios, PCs completos)
+# REMOVIDOS intencionalmente: 'suporte', 'cooler', 'ventoinha', 'base', 'case', 'gabinete'
+# pois aparecem em descrições técnicas legítimas (ex: "sem cooler", "suporte a PCIe",
+# "base clock") e 'gabinete'/'case' são categorias de produto válidas.
 EXCLUSION_KEYWORDS = [
     'pc ', 'computador', 'completo', 'kit', 'combo', 'notebook', 'laptop',
     'desktop', 'workstation', 'all-in-one', 'torre', 'cpu completo',
-    'suporte', 'bracket', 'shield', 'parafuso', 'cabo', 'adaptador', 'extensor',
-    'acessorio', 'cooler', 'ventoinha', 'base', 'case', 'gabinete'
+    'bracket', 'shield', 'parafuso', 'cabo', 'adaptador', 'extensor', 'acessorio'
 ]
 
 # Sufixos que indicam PRODUTO DIFERENTE (não podem aparecer se não estão no modelo buscado)
 VARIANT_SUFFIXES = [
     'xt', 'ti', 'super', 'kf', 'f', 'ultra', 'max', 'pro',
     'plus', 'boost', 'overclocked', 'turbo', 'extreme', 'premium',
-    'x3d', '3d', 's', 'g'
+    'x3d', '3d', 's', 'g', 'x'  # 'x' adicionado para cobrir 7600X, 5800X, etc.
 ]
 
-# Palavras genéricas que podem aparecer sem problema (são apenas marketing)
+# Palavras genéricas que podem aparecer sem problema (são apenas marketing/descrição)
 GENERIC_WORDS = [
     'radeon', 'geforce', 'ryzen', 'core', 'intel', 'amd', 'nvidia',
     'processador', 'processor', 'cpu', 'gpu', 'ssd', 'hdd', 'memoria',
@@ -50,7 +52,13 @@ GENERIC_WORDS = [
     'para', 'e', 'and', 'the', 'a', 'an', 'in', 'on', 'at', 'to', 'for',
     'black', 'white', 'rgb', 'argb', 'led', 'custom', 'windforce', 'phantom',
     'strix', 'tuf', 'rog', 'aorus', 'ventus', 'eagle', 'armor', 'twin', 'frozr',
-    'nitro', 'pulse', 'red', 'devil', 'v2', 'v1', 'ex', 'lx', 'lpx'
+    'nitro', 'pulse', 'red', 'devil', 'v2', 'v1', 'ex', 'lx', 'lpx',
+    # Palavras descritivas portuguesas comuns que não fazem parte de nomes de modelo
+    'preto', 'preta', 'branco', 'branca', 'sem', 'ate', 'max', 'turbo',
+    'cache', 'nucleos', 'nucleo', 'geracao', 'interno', 'interna',
+    'chipset', 'socket', 'suporte', 'compativel', 'alta', 'alto',
+    'velocidade', 'leitura', 'gravacao', 'desempenho', 'gamer',
+    'cooler', 'ventoinha', 'base', 'gabinete', 'case', 'torre'
 ]
 
 
@@ -310,15 +318,19 @@ class PriceScraper:
             if not normalized_token:
                 continue
 
+            # Ignorar tokens muito curtos (1 char) e palavras genéricas
+            if len(normalized_token) < 2:
+                continue
+
             if normalized_token in GENERIC_WORDS:
                 continue
 
-            if re.search(r'\d', normalized_token):
-                key_tokens.append(normalized_token)
-            elif normalized_token in VARIANT_SUFFIXES:
-                key_tokens.append(normalized_token)
-            elif len(normalized_token) >= 6 and re.search(r'[a-z]+[0-9]+|[0-9]+[a-z]+', normalized_token):
-                key_tokens.append(normalized_token)
+            # Manter qualquer token que não seja genérico:
+            # - com dígitos: "9070", "265k", "32gb"
+            # - sufixos de variante: "xt", "ti", "kf"
+            # - tokens curtos significativos: "ii", "wifi", "ax", "itx", "atx"
+            # - códigos alfanuméricos longos: "b550mplus", "rmwafbargb"
+            key_tokens.append(normalized_token)
 
         return key_tokens
 
@@ -346,11 +358,21 @@ class PriceScraper:
                 return False
 
         search_variants = [t for t in search_tokens if t in VARIANT_SUFFIXES]
-        product_variants = [t for t in product_tokens if t in VARIANT_SUFFIXES]
 
-        for variant in product_variants:
-            if variant not in search_variants:
-                return False
+        # Verificar variantes apenas quando aparecem ADJACENTES a tokens numéricos do modelo.
+        # Ex: rejeita "7600 xt" mas aceita "7600, 5.1GHz Max Turbo" (Max não é variante do modelo)
+        search_numeric_for_variants = [t for t in search_tokens if re.search(r'\d', t)]
+
+        for variant in VARIANT_SUFFIXES:
+            if variant in search_variants:
+                continue  # Variante faz parte da busca, ok
+
+            # Verificar se a variante aparece colada ou logo após algum número do modelo
+            for num in search_numeric_for_variants:
+                # Padrões: "7600xt", "7600 xt", "7600-xt"
+                pattern = re.compile(r'\b' + re.escape(num) + r'[\s\-]?' + re.escape(variant) + r'\b')
+                if pattern.search(product_name_normalized):
+                    return False
 
         search_numeric = [t for t in search_tokens if re.search(r'\d', t)]
         product_numeric = [t for t in product_tokens if re.search(r'\d', t)]
