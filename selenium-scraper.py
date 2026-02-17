@@ -397,48 +397,69 @@ class PriceScraper:
         """
         Tenta clicar no checkbox 'KaBuM!' no filtro 'Vendido por'.
         Retorna True se encontrou e clicou, False se não encontrou.
-        Robusto a mudanças de classe — busca por texto dentro de label.filterOption.
-        Re-busca o elemento imediatamente antes de clicar para evitar StaleElementReference.
+        - JS usado apenas para scroll (evita ElementClickIntercepted por elemento coberto)
+        - ActionChains para o clique real (preserva comportamento humanizado)
+        - Índice usado em vez de referência Python (evita StaleElementReference)
         """
         try:
-            # Primeiro passo: encontrar o índice da label correta pelo texto
-            labels = self.driver.find_elements(By.CSS_SELECTOR, "label.filterOption")
-            target_index = None
+            # Encontrar índice da label pelo texto via JS — sem referência Python
+            target_index = self.driver.execute_script("""
+                var labels = document.querySelectorAll('label.filterOption');
+                for (var i = 0; i < labels.length; i++) {
+                    if (labels[i].textContent.toLowerCase().indexOf('kabum') !== -1) {
+                        return i;
+                    }
+                }
+                return -1;
+            """)
 
-            for i, label in enumerate(labels):
-                try:
-                    if "kabum" in label.text.lower():
-                        target_index = i
-                        break
-                except:
-                    continue
-
-            if target_index is None:
+            if target_index == -1:
                 print("[KABUM] Filtro 'KaBuM!' nao encontrado - sem estoque proprio nessa busca")
                 return False
 
-            # Segundo passo: scroll via JavaScript usando o índice (sem guardar referência)
-            self.driver.execute_script(
-                "document.querySelectorAll('label.filterOption')[arguments[0]].scrollIntoView(true);",
-                target_index
-            )
-            time.sleep(random.uniform(0.4, 0.7))
+            # Scroll via JS para o centro da tela — evita que fique atrás do header
+            self.driver.execute_script("""
+                var labels = document.querySelectorAll('label.filterOption');
+                var label = labels[arguments[0]];
+                if (label) label.scrollIntoView({block: 'center', behavior: 'smooth'});
+            """, target_index)
 
-            # Terceiro passo: re-buscar e clicar — nova referência, sem stale
-            labels_fresh = self.driver.find_elements(By.CSS_SELECTOR, "label.filterOption")
-            if target_index >= len(labels_fresh):
-                print("[KABUM] Filtro sumiu apos scroll, ignorando")
+            # Aguardar scroll terminar e página estabilizar
+            time.sleep(random.uniform(0.6, 1.0))
+
+            # Verificar se já está marcado via JS (sem guardar referência)
+            already_checked = self.driver.execute_script("""
+                var labels = document.querySelectorAll('label.filterOption');
+                var label = labels[arguments[0]];
+                if (!label) return null;
+                var input = label.querySelector('input');
+                return input ? input.checked : null;
+            """, target_index)
+
+            if already_checked is None:
+                print("[KABUM] Filtro sumiu apos scroll")
                 return False
 
-            target_label = labels_fresh[target_index]
-            checkbox = target_label.find_element(By.CSS_SELECTOR, "input")
-
-            if not checkbox.is_selected():
-                checkbox.click()
-                print("[KABUM] Filtro 'KaBuM!' aplicado")
-            else:
+            if already_checked:
                 print("[KABUM] Filtro 'KaBuM!' ja estava selecionado")
+                return True
 
+            # Buscar referência fresca imediatamente antes de clicar
+            labels_fresh = self.driver.find_elements(By.CSS_SELECTOR, "label.filterOption")
+            if target_index >= len(labels_fresh):
+                print("[KABUM] Filtro sumiu apos scroll")
+                return False
+
+            checkbox = labels_fresh[target_index].find_element(By.CSS_SELECTOR, "input")
+
+            # Clique humanizado via ActionChains
+            actions = ActionChains(self.driver)
+            actions.move_to_element(checkbox)
+            actions.pause(random.uniform(0.1, 0.3))
+            actions.click()
+            actions.perform()
+
+            print("[KABUM] Filtro 'KaBuM!' aplicado")
             return True
 
         except Exception as e:
