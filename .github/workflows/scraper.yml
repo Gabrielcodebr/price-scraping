@@ -1,0 +1,45 @@
+name: Price Scraper (Docker)
+
+on:
+  schedule:
+    # Executa a cada 2 dias às 6h BRT (9h UTC)
+    # Dias ímpares: 1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23, 25, 27, 29, 31
+    - cron: '0 9 1-31/2 * *'
+  
+  # Permite execução manual
+  workflow_dispatch:
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360  # 6 horas (máximo permitido)
+    
+    steps:
+    - name: Checkout código
+      uses: actions/checkout@v3
+    
+    - name: Criar arquivo .env
+      run: |
+        echo "SUPABASE_URL=${{ secrets.SUPABASE_URL }}" > .env
+        echo "SUPABASE_KEY=${{ secrets.SUPABASE_KEY }}" >> .env
+    
+    - name: Build e executar
+      run: |
+        echo "🔨 Building Docker image..."
+        docker build -t price-scraper .
+        echo "🚀 Executando scraper..."
+        echo "⏰ Iniciado em: $(date)"
+        docker run --env-file .env price-scraper
+        echo "✅ Finalizado em: $(date)"
+    
+    - name: Limpar
+      if: always()
+      run: |
+        rm -f .env
+        docker image prune -af
+    
+    - name: Notificar se timeout
+      if: cancelled()
+      run: |
+        echo "⚠️ Job cancelado por timeout (6 horas)!"
+        echo "Considere dividir em lotes menores."
