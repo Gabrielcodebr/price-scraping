@@ -398,24 +398,48 @@ class PriceScraper:
         Tenta clicar no checkbox 'KaBuM!' no filtro 'Vendido por'.
         Retorna True se encontrou e clicou, False se não encontrou.
         Robusto a mudanças de classe — busca por texto dentro de label.filterOption.
+        Re-busca o elemento imediatamente antes de clicar para evitar StaleElementReference.
         """
         try:
+            # Primeiro passo: encontrar o índice da label correta pelo texto
             labels = self.driver.find_elements(By.CSS_SELECTOR, "label.filterOption")
+            target_index = None
 
-            for label in labels:
-                if "kabum" in label.text.lower():
-                    checkbox = label.find_element(By.CSS_SELECTOR, "input")
-                    if not checkbox.is_selected():
-                        self.driver.execute_script("arguments[0].scrollIntoView(true);", checkbox)
-                        time.sleep(random.uniform(0.3, 0.6))
-                        checkbox.click()
-                        print("[KABUM] Filtro 'KaBuM!' aplicado")
-                    else:
-                        print("[KABUM] Filtro 'KaBuM!' ja estava selecionado")
-                    return True
+            for i, label in enumerate(labels):
+                try:
+                    if "kabum" in label.text.lower():
+                        target_index = i
+                        break
+                except:
+                    continue
 
-            print("[KABUM] Filtro 'KaBuM!' nao encontrado - sem estoque proprio nessa busca")
-            return False
+            if target_index is None:
+                print("[KABUM] Filtro 'KaBuM!' nao encontrado - sem estoque proprio nessa busca")
+                return False
+
+            # Segundo passo: scroll via JavaScript usando o índice (sem guardar referência)
+            self.driver.execute_script(
+                "document.querySelectorAll('label.filterOption')[arguments[0]].scrollIntoView(true);",
+                target_index
+            )
+            time.sleep(random.uniform(0.4, 0.7))
+
+            # Terceiro passo: re-buscar e clicar — nova referência, sem stale
+            labels_fresh = self.driver.find_elements(By.CSS_SELECTOR, "label.filterOption")
+            if target_index >= len(labels_fresh):
+                print("[KABUM] Filtro sumiu apos scroll, ignorando")
+                return False
+
+            target_label = labels_fresh[target_index]
+            checkbox = target_label.find_element(By.CSS_SELECTOR, "input")
+
+            if not checkbox.is_selected():
+                checkbox.click()
+                print("[KABUM] Filtro 'KaBuM!' aplicado")
+            else:
+                print("[KABUM] Filtro 'KaBuM!' ja estava selecionado")
+
+            return True
 
         except Exception as e:
             print(f"[KABUM] Falha ao aplicar filtro: {e}")
@@ -566,6 +590,17 @@ class PriceScraper:
             # Aguardar recarregamento após filtro
             self.human_delay(3, 5)
             self.wait_for_page_load()
+
+            # Esperar explicitamente pelos cards ou pela mensagem de vazio
+            try:
+                WebDriverWait(self.driver, 15).until(
+                    lambda d: (
+                        d.find_elements(By.CSS_SELECTOR, ".productCard, [data-testid='product-card'], .sc-iCoHVE, .sc-dkrFOg")
+                        or d.find_elements(By.CSS_SELECTOR, "[data-testid='empty-result'], .sc-empty-result, .emptyResult")
+                    )
+                )
+            except TimeoutException:
+                print("[KABUM] Timeout aguardando produtos apos filtro")
 
             # Verificar se ainda há produtos após filtro
             try:
