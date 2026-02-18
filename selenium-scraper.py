@@ -612,6 +612,11 @@ class PriceScraper:
 
             search_term = f"{marca} {produto}" if marca and marca.lower() not in produto.lower() else produto
 
+            # DEBUG: verificar termo de busca
+            print(f"[KABUM DEBUG] component['name']: '{produto}'")
+            print(f"[KABUM DEBUG] brand: '{marca}'")
+            print(f"[KABUM DEBUG] search_term final: '{search_term}'")
+
             if not self.human_typing(search_element, search_term):
                 print("ERRO: Falha ao digitar na Kabum")
                 return None
@@ -825,6 +830,12 @@ class PriceScraper:
 
         try:
             search_term = f"{marca} {produto}" if marca and marca.lower() not in produto.lower() else produto
+            
+            # DEBUG: verificar termo de busca
+            print(f"[AMAZON DEBUG] component['name']: '{produto}'")
+            print(f"[AMAZON DEBUG] brand: '{marca}'")
+            print(f"[AMAZON DEBUG] search_term final: '{search_term}'")
+            
             search_url = f"https://www.amazon.com.br/s?k={search_term.replace(' ', '+')}&i=computers"
             self.driver.get(search_url)
 
