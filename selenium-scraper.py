@@ -625,6 +625,9 @@ class PriceScraper:
             search_element.send_keys(Keys.ENTER)
             self.human_delay(4, 7)
             self.wait_for_page_load()
+            
+            # DEBUG: verificar URL da busca
+            print(f"[KABUM DEBUG] URL apos busca: {self.driver.current_url}")
 
             # Scroll inicial para garantir que filtros e produtos carregaram
             print("[KABUM] Scroll inicial...")
@@ -837,6 +840,10 @@ class PriceScraper:
             print(f"[AMAZON DEBUG] search_term final: '{search_term}'")
             
             search_url = f"https://www.amazon.com.br/s?k={search_term.replace(' ', '+')}&i=computers"
+            
+            # DEBUG: verificar URL construída
+            print(f"[AMAZON DEBUG] URL: {search_url}")
+            
             self.driver.get(search_url)
 
             if not self.wait_for_page_load():
