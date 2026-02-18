@@ -586,48 +586,27 @@ class PriceScraper:
             print(f"[KABUM] Modelo para validacao: {modelo}")
 
         try:
-            self.driver.get("https://www.kabum.com.br/")
-
+            search_term = f"{marca} {produto}" if marca and marca.lower() not in produto.lower() else produto
+            
+            # DEBUG: verificar termo de busca
+            print(f"[KABUM DEBUG] component['name']: '{produto}'")
+            print(f"[KABUM DEBUG] brand: '{marca}'")
+            print(f"[KABUM DEBUG] search_term final: '{search_term}'")
+            
+            # Navegar diretamente pela URL de busca (evita inconsistência do autocomplete)
+            search_url = f"https://www.kabum.com.br/busca/{search_term.replace(' ', '-')}"
+            self.driver.get(search_url)
+            
             if not self.wait_for_page_load():
                 self.driver.refresh()
                 if not self.wait_for_page_load():
                     print("ERRO: Kabum nao carregou")
                     return None
-
-            search_selectors = [
-                "input[placeholder*='Busque']",
-                "#input-busca",
-                "input[data-testid='input-busca']",
-                "input[placeholder*='buscar']",
-                ".sc-fqkvVR input",
-                "[data-cy='search-input']",
-                "input.sc-fqkvVR"
-            ]
-
-            search_element = self.try_find_element_safe(search_selectors, timeout=10)
-
-            if not search_element:
-                print("ERRO: Campo de busca nao encontrado na Kabum")
-                return None
-
-            search_term = f"{marca} {produto}" if marca and marca.lower() not in produto.lower() else produto
-
-            # DEBUG: verificar termo de busca
-            print(f"[KABUM DEBUG] component['name']: '{produto}'")
-            print(f"[KABUM DEBUG] brand: '{marca}'")
-            print(f"[KABUM DEBUG] search_term final: '{search_term}'")
-
-            if not self.human_typing(search_element, search_term):
-                print("ERRO: Falha ao digitar na Kabum")
-                return None
-
-            self.human_delay(0.5, 1.5)
-            search_element.send_keys(Keys.ENTER)
-            self.human_delay(4, 7)
-            self.wait_for_page_load()
             
-            # DEBUG: verificar URL da busca
+            # DEBUG: verificar URL final
             print(f"[KABUM DEBUG] URL apos busca: {self.driver.current_url}")
+            
+            self.human_delay(3, 5)
 
             # Scroll inicial para garantir que filtros e produtos carregaram
             print("[KABUM] Scroll inicial...")
@@ -667,7 +646,7 @@ class PriceScraper:
 
             # Scroll completo após filtro
             print("[KABUM] Scroll apos filtro...")
-            self.progressive_scroll(max_scrolls=8)
+            self.progressive_scroll(max_scrolls=12)  # Aumentado de 8 para 12
 
             # Buscar containers de produtos
             product_container_selectors = [
@@ -857,7 +836,7 @@ class PriceScraper:
             self.wait_for_page_load()
 
             print("[AMAZON] Fazendo scroll progressivo...")
-            self.progressive_scroll(max_scrolls=6)
+            self.progressive_scroll(max_scrolls=10)
 
             product_selectors = [
                 "[data-component-type='s-search-result']",
@@ -885,7 +864,7 @@ class PriceScraper:
             valid_products = []
             rejected_count = 0
 
-            for product in product_elements[:40]:
+            for product in product_elements[:60]:  # Aumentado de 40 para 60
                 try:
                     name_selectors = [
                         "h2 a span",

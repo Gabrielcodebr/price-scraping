@@ -612,6 +612,11 @@ class PriceScraper:
 
             search_term = f"{marca} {produto}" if marca and marca.lower() not in produto.lower() else produto
 
+            # DEBUG: verificar termo de busca
+            print(f"[KABUM DEBUG] component['name']: '{produto}'")
+            print(f"[KABUM DEBUG] brand: '{marca}'")
+            print(f"[KABUM DEBUG] search_term final: '{search_term}'")
+
             if not self.human_typing(search_element, search_term):
                 print("ERRO: Falha ao digitar na Kabum")
                 return None
@@ -620,6 +625,9 @@ class PriceScraper:
             search_element.send_keys(Keys.ENTER)
             self.human_delay(4, 7)
             self.wait_for_page_load()
+            
+            # DEBUG: verificar URL da busca
+            print(f"[KABUM DEBUG] URL apos busca: {self.driver.current_url}")
 
             # Scroll inicial para garantir que filtros e produtos carregaram
             print("[KABUM] Scroll inicial...")
@@ -717,6 +725,13 @@ class PriceScraper:
 
                     if modelo and not self.is_exact_product_match(product_name, modelo, marca):
                         rejected_count += 1
+                        # DEBUG: mostrar primeiros 3 produtos rejeitados
+                        if rejected_count <= 3:
+                            print(f"[KABUM DEBUG] Rejeitado #{rejected_count}: {product_name[:80]}")
+                            search_tokens = self.extract_key_tokens(modelo)
+                            product_normalized = product_name.lower().replace('-', '').replace('_', '')
+                            print(f"  Tokens busca: {search_tokens}")
+                            print(f"  Nome normalizado: {product_normalized[:100]}")
                         continue
 
                     if not modelo:
@@ -818,7 +833,17 @@ class PriceScraper:
 
         try:
             search_term = f"{marca} {produto}" if marca and marca.lower() not in produto.lower() else produto
+            
+            # DEBUG: verificar termo de busca
+            print(f"[AMAZON DEBUG] component['name']: '{produto}'")
+            print(f"[AMAZON DEBUG] brand: '{marca}'")
+            print(f"[AMAZON DEBUG] search_term final: '{search_term}'")
+            
             search_url = f"https://www.amazon.com.br/s?k={search_term.replace(' ', '+')}&i=computers"
+            
+            # DEBUG: verificar URL construída
+            print(f"[AMAZON DEBUG] URL: {search_url}")
+            
             self.driver.get(search_url)
 
             if not self.wait_for_page_load():
@@ -899,6 +924,13 @@ class PriceScraper:
 
                     if modelo and not self.is_exact_product_match(product_name, modelo, marca):
                         rejected_count += 1
+                        # DEBUG: mostrar primeiros 3 produtos rejeitados
+                        if rejected_count <= 3:
+                            print(f"[AMAZON DEBUG] Rejeitado #{rejected_count}: {product_name[:80]}")
+                            search_tokens = self.extract_key_tokens(modelo)
+                            product_normalized = product_name.lower().replace('-', '').replace('_', '')
+                            print(f"  Tokens busca: {search_tokens}")
+                            print(f"  Nome normalizado: {product_normalized[:100]}")
                         continue
 
                     if not modelo:
