@@ -717,6 +717,13 @@ class PriceScraper:
 
                     if modelo and not self.is_exact_product_match(product_name, modelo, marca):
                         rejected_count += 1
+                        # DEBUG: mostrar primeiros 3 produtos rejeitados
+                        if rejected_count <= 3:
+                            print(f"[KABUM DEBUG] Rejeitado #{rejected_count}: {product_name[:80]}")
+                            search_tokens = self.extract_key_tokens(modelo)
+                            product_normalized = product_name.lower().replace('-', '').replace('_', '')
+                            print(f"  Tokens busca: {search_tokens}")
+                            print(f"  Nome normalizado: {product_normalized[:100]}")
                         continue
 
                     if not modelo:
@@ -899,6 +906,13 @@ class PriceScraper:
 
                     if modelo and not self.is_exact_product_match(product_name, modelo, marca):
                         rejected_count += 1
+                        # DEBUG: mostrar primeiros 3 produtos rejeitados
+                        if rejected_count <= 3:
+                            print(f"[AMAZON DEBUG] Rejeitado #{rejected_count}: {product_name[:80]}")
+                            search_tokens = self.extract_key_tokens(modelo)
+                            product_normalized = product_name.lower().replace('-', '').replace('_', '')
+                            print(f"  Tokens busca: {search_tokens}")
+                            print(f"  Nome normalizado: {product_normalized[:100]}")
                         continue
 
                     if not modelo:
