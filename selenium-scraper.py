@@ -1194,6 +1194,9 @@ def update_component_prices(component_id, results):
 # ENTRY POINT
 # ---------------------------------------------------------------------------
 
+MAX_RUNTIME_MINUTES = 300  # Para dentro de 5h, deixando 1h de margem pro timeout de 6h do GitHub Actions
+
+
 def main():
     print("=" * 60)
     print("Price Scraper - Kabum & Amazon")
@@ -1206,8 +1209,16 @@ def main():
         print("Verifique instalacao do Chrome/ChromeDriver")
         return
 
+    start_time = time.time()
+
     try:
-        response = supabase.table("components").select("*").execute()
+        # Ordena pelos mais antigos primeiro — nunca atualizados (null) têm prioridade máxima
+        response = (
+            supabase.table("components")
+            .select("*")
+            .order("best_price->>updated_at", desc=False, nullsfirst=True)
+            .execute()
+        )
         components = response.data
 
         if not components:
@@ -1217,21 +1228,30 @@ def main():
         print(f"\nTotal de componentes: {len(components)}\n")
 
         for i, component in enumerate(components, 1):
-            print(f"\n[{i}/{len(components)}]")
+            elapsed = (time.time() - start_time) / 60
+            remaining = MAX_RUNTIME_MINUTES - elapsed
+
+            if remaining < 5:
+                print(f"\n⏰ Limite de tempo atingido ({elapsed:.0f}min). Processados {i - 1}/{len(components)} componentes.")
+                print("Os componentes restantes serao priorizados na proxima execucao.")
+                break
+
+            print(f"\n[{i}/{len(components)}] | Tempo decorrido: {elapsed:.0f}min | Restante: {remaining:.0f}min")
 
             results = scraper.scrape_component(component)
 
             # Sempre atualiza — com resultados ou resetando
             update_component_prices(component['id'], results)
 
-            if component != components[-1]:
+            if i < len(components):
                 delay = random.uniform(8, 15)
                 print(f"Aguardando {delay:.1f}s...\n")
                 time.sleep(delay)
 
-        print("\n" + "=" * 60)
-        print("Scraping concluido")
-        print("=" * 60)
+        else:
+            print("\n" + "=" * 60)
+            print("Scraping concluido")
+            print("=" * 60)
 
     except Exception as e:
         print(f"ERRO CRITICO: Falha ao buscar componentes - {e}")
