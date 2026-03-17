@@ -25,10 +25,19 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 # REMOVIDOS intencionalmente: 'suporte', 'cooler', 'ventoinha', 'base', 'case', 'gabinete'
 # pois aparecem em descrições técnicas legítimas (ex: "sem cooler", "suporte a PCIe",
 # "base clock") e 'gabinete'/'case' são categorias de produto válidas.
+#
+# [FIX Bug#1/#4] 'computador' e 'desktop' foram substituídos por frases específicas
+# para evitar rejeitar descrições legítimas como "caixa de computador ATX" ou
+# "processador de desktop Core i7".
 EXCLUSION_KEYWORDS = [
-    'pc ', 'computador', 'completo', 'kit', 'combo', 'notebook', 'laptop',
-    'desktop', 'workstation', 'all-in-one', 'torre', 'cpu completo',
-    'bracket', 'shield', 'parafuso', 'cabo', 'adaptador', 'extensor', 'acessorio'
+    'pc ', 'completo', 'kit', 'combo', 'notebook', 'laptop',
+    'workstation', 'all-in-one', 'torre', 'cpu completo',
+    'bracket', 'shield', 'parafuso', 'cabo', 'adaptador', 'extensor', 'acessorio',
+    # Frases específicas para PCs completos (substituem 'computador' e 'desktop' genéricos)
+    'computador completo', 'computador gamer', 'computador montado', 'pc computador',
+    'computador intel', 'computador amd', 'computador core', 'computador ryzen',
+    'desktop completo', 'desktop gamer', 'desktop montado',
+    'desktop intel', 'desktop amd', 'desktop core', 'desktop ryzen',
 ]
 
 # Sufixos que indicam PRODUTO DIFERENTE (não podem aparecer se não estão no modelo buscado)
@@ -60,6 +69,11 @@ GENERIC_WORDS = [
     'velocidade', 'leitura', 'gravacao', 'desempenho', 'gamer',
     'cooler', 'ventoinha', 'base', 'gabinete', 'case', 'torre'
 ]
+
+# [FIX Bug#5] Fabricantes de chip — seus produtos são vendidos por terceiros
+# (ASUS, MSI, Gigabyte, ZOTAC, etc.), então o nome da marca quase nunca aparece
+# no título do produto. Pular brand check para esses fabricantes.
+CHIP_MANUFACTURERS = {'nvidia', 'amd', 'intel'}
 
 
 class PriceScraper:
@@ -313,7 +327,10 @@ class PriceScraper:
 
         key_tokens = []
         for token in tokens:
-            normalized_token = token.replace('-', '').replace('_', '')
+            # [FIX Bug#2] Remover TODOS os caracteres não-alfanuméricos (não apenas - e _).
+            # Evita que pontuação residual (vírgulas, barras de SKU como "SA400S37/240G")
+            # crie tokens sujos que causam falsos positivos na checagem de variantes.
+            normalized_token = re.sub(r'[^a-z0-9]', '', token)
 
             if not normalized_token:
                 continue
@@ -334,8 +351,18 @@ class PriceScraper:
 
         return key_tokens
 
-    def is_exact_product_match(self, product_name, search_model, search_brand=None):
-        """Valida se o produto encontrado corresponde exatamente ao modelo buscado."""
+    def is_exact_product_match(self, product_name, search_model, search_brand=None, search_name=None):
+        """
+        Valida se o produto encontrado corresponde exatamente ao modelo buscado.
+
+        Args:
+            product_name: Nome do produto encontrado na loja.
+            search_model: Modelo sendo buscado (campo 'model' do componente).
+            search_brand: Marca do componente (campo 'brand').
+            search_name: Nome completo do componente (campo 'name'), usado como
+                         fallback para extrair capacidade de armazenamento quando
+                         o model não contém essa informação (Bug#3).
+        """
         if not product_name or not search_model:
             return False
 
@@ -392,22 +419,35 @@ class PriceScraper:
                 if search_num not in product_name_normalized:
                     return False
 
+                # [FIX Bug#2] Usar word boundary (\b) em vez de substring simples (`in`).
+                # Evita que códigos de peça como "SA400S37" sejam interpretados como
+                # variante "A400S" do modelo "A400".
                 for variant in VARIANT_SUFFIXES:
-                    pattern = search_num + variant
-                    if pattern in product_name_normalized:
+                    variant_pattern = re.compile(
+                        r'\b' + re.escape(search_num) + re.escape(variant) + r'\b'
+                    )
+                    if variant_pattern.search(product_name_normalized):
                         if variant not in [t for t in search_tokens if t in VARIANT_SUFFIXES]:
                             return False
 
+        # [FIX Bug#3] Extrair capacidade também do nome completo do componente (search_name)
+        # quando o model não contém essa informação. Ex: model="870 EVO", name="Samsung 870 EVO 1TB"
         search_capacity = self.extract_storage_capacity(search_model)
+        if search_capacity is None and search_name:
+            search_capacity = self.extract_storage_capacity(search_name)
         product_capacity = self.extract_storage_capacity(product_name)
 
         if search_capacity is not None:
             if product_capacity is None or product_capacity != search_capacity:
                 return False
 
+        # [FIX Bug#5] Pular brand check para fabricantes de chip (NVIDIA, AMD, Intel).
+        # Seus produtos são vendidos por terceiros (ASUS, MSI, Gigabyte, ZOTAC etc.)
+        # e o nome da marca quase nunca aparece no título do produto na loja.
         if search_brand:
-            if search_brand.lower() not in product_name_lower:
-                return False
+            if search_brand.lower() not in CHIP_MANUFACTURERS:
+                if search_brand.lower() not in product_name_lower:
+                    return False
 
         return True
 
@@ -587,25 +627,25 @@ class PriceScraper:
 
         try:
             search_term = f"{marca} {produto}" if marca and marca.lower() not in produto.lower() else produto
-            
+
             # DEBUG: verificar termo de busca
             print(f"[KABUM DEBUG] component['name']: '{produto}'")
             print(f"[KABUM DEBUG] brand: '{marca}'")
             print(f"[KABUM DEBUG] search_term final: '{search_term}'")
-            
+
             # Navegar diretamente pela URL de busca (evita inconsistência do autocomplete)
             search_url = f"https://www.kabum.com.br/busca/{search_term.replace(' ', '-')}"
             self.driver.get(search_url)
-            
+
             if not self.wait_for_page_load():
                 self.driver.refresh()
                 if not self.wait_for_page_load():
                     print("ERRO: Kabum nao carregou")
                     return None
-            
+
             # DEBUG: verificar URL final
             print(f"[KABUM DEBUG] URL apos busca: {self.driver.current_url}")
-            
+
             self.human_delay(3, 5)
 
             # Scroll inicial para garantir que filtros e produtos carregaram
@@ -702,7 +742,7 @@ class PriceScraper:
 
                     product_name = name_element.text.strip()
 
-                    if modelo and not self.is_exact_product_match(product_name, modelo, marca):
+                    if modelo and not self.is_exact_product_match(product_name, modelo, marca, search_name=produto):
                         rejected_count += 1
                         # DEBUG: mostrar primeiros 3 produtos rejeitados
                         if rejected_count <= 3:
@@ -812,17 +852,17 @@ class PriceScraper:
 
         try:
             search_term = f"{marca} {produto}" if marca and marca.lower() not in produto.lower() else produto
-            
+
             # DEBUG: verificar termo de busca
             print(f"[AMAZON DEBUG] component['name']: '{produto}'")
             print(f"[AMAZON DEBUG] brand: '{marca}'")
             print(f"[AMAZON DEBUG] search_term final: '{search_term}'")
-            
+
             search_url = f"https://www.amazon.com.br/s?k={search_term.replace(' ', '+')}&i=computers"
-            
+
             # DEBUG: verificar URL construída
             print(f"[AMAZON DEBUG] URL: {search_url}")
-            
+
             self.driver.get(search_url)
 
             if not self.wait_for_page_load():
@@ -901,7 +941,7 @@ class PriceScraper:
                     if not product_name:
                         continue
 
-                    if modelo and not self.is_exact_product_match(product_name, modelo, marca):
+                    if modelo and not self.is_exact_product_match(product_name, modelo, marca, search_name=produto):
                         rejected_count += 1
                         # DEBUG: mostrar primeiros 3 produtos rejeitados
                         if rejected_count <= 3:
