@@ -3,7 +3,7 @@
 [![Python](https://img.shields.io/badge/Python-3.9+-blue.svg)](https://www.python.org/downloads/)
 [![Selenium](https://img.shields.io/badge/Selenium-4.35.0-green.svg)](https://www.selenium.dev/)
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED.svg)](https://www.docker.com/)
-[![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![License](https://img.shields.io/badge/License-CC%20BY--ND%204.0-lightgrey.svg)](LICENSE)
 
 > **Scraper automatizado e inteligente** para monitorar preços de componentes de PC nas principais lojas brasileiras (Kabum e Amazon BR).
 
