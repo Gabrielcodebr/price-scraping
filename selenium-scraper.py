@@ -725,7 +725,7 @@ class PriceScraper:
             try:
                 WebDriverWait(self.driver, 15).until(
                     lambda d: (
-                        d.find_elements(By.CSS_SELECTOR, ".productCard, [data-testid='product-card'], .sc-iCoHVE, .sc-dkrFOg")
+                        d.find_elements(By.CSS_SELECTOR, ".productCard, [data-testid='product-card'], [class*='productCard'], [class*='ProductCard'], a[href*='/produto/']")
                         or d.find_elements(By.CSS_SELECTOR, "[data-testid='empty-result'], .sc-empty-result, .emptyResult")
                     )
                 )
@@ -752,8 +752,9 @@ class PriceScraper:
             product_container_selectors = [
                 ".productCard",
                 "[data-testid='product-card']",
-                ".sc-iCoHVE",
-                ".sc-dkrFOg"
+                "[class*='productCard']",
+                "[class*='ProductCard']",
+                "[class*='product-card']",
             ]
 
             product_containers = []
@@ -762,11 +763,33 @@ class PriceScraper:
                     containers = self.driver.find_elements(By.CSS_SELECTOR, selector)
                     if containers:
                         product_containers = containers
+                        print(f"[KABUM] Seletor usado: {selector}")
                         break
                 except:
                     continue
 
+            # Fallback: usar links de produto como proxy de container
             if not product_containers:
+                try:
+                    product_links = self.driver.find_elements(By.CSS_SELECTOR, "a[href*='/produto/']")
+                    # Pegar o pai de cada link (o card real)
+                    seen = set()
+                    for link in product_links:
+                        try:
+                            parent = self.driver.execute_script("return arguments[0].parentElement;", link)
+                            if parent and id(parent) not in seen:
+                                seen.add(id(parent))
+                                product_containers.append(parent)
+                        except:
+                            continue
+                    if product_containers:
+                        print(f"[KABUM] Seletor fallback: a[href*='/produto/'] (pai) — {len(product_containers)} containers")
+                except:
+                    pass
+
+            if not product_containers:
+                page_title = self.driver.title
+                print(f"[KABUM] Titulo da pagina: {page_title}")
                 print("ERRO: Nenhum produto encontrado na Kabum")
                 return None
 
@@ -781,26 +804,34 @@ class PriceScraper:
                         ".nameCard",
                         "span.nameCard",
                         "[data-testid='product-name']",
-                        ".sc-dcJsrY",
+                        "[class*='nameCard']",
+                        "[class*='productName']",
+                        "[class*='ProductName']",
                         ".productName",
-                        "a.productLink span",
-                        ".sc-kpDqfm",
-                        "h2.sc-dcJsrY"
+                        "a[href*='/produto/'] span",
+                        "a[href*='/produto/']",
+                        "h2 span",
+                        "h3 span",
                     ]
 
                     name_element = None
                     for selector in name_selectors:
                         try:
                             name_element = container.find_element(By.CSS_SELECTOR, selector)
-                            if name_element:
+                            if name_element and name_element.text.strip():
                                 break
                         except:
                             continue
 
                     if not name_element:
-                        continue
-
-                    product_name = name_element.text.strip()
+                        # Último recurso: texto do container inteiro
+                        raw_text = container.text.strip().split('\n')[0]
+                        if raw_text:
+                            product_name = raw_text
+                        else:
+                            continue
+                    else:
+                        product_name = name_element.text.strip()
 
                     if modelo and not self.is_exact_product_match(product_name, modelo, marca, search_name=produto):
                         if not self.ask_gemini_is_match(product_name, produto, modelo):
@@ -830,12 +861,14 @@ class PriceScraper:
                         ".priceCard",
                         "span.priceCard",
                         "[data-testid='price']",
+                        "[class*='priceCard']",
+                        "[class*='finalPrice']",
+                        "[class*='bestPrice']",
+                        "[class*='Price']",
                         ".finalPrice",
-                        ".sc-dcJsrY.fkuRgL",
                         ".price",
                         ".priceMain",
                         ".bestPrice",
-                        ".sc-dlfnbm"
                     ]
 
                     price_element = None
@@ -939,8 +972,17 @@ class PriceScraper:
             print("[AMAZON] Fazendo scroll progressivo...")
             self.progressive_scroll(max_scrolls=10)
 
+            # Detectar CAPTCHA antes de tentar encontrar produtos
+            page_title = self.driver.title.lower()
+            if "robot" in page_title or "captcha" in page_title or "verification" in page_title:
+                print(f"[AMAZON] CAPTCHA detectado! Titulo: {self.driver.title}")
+                return None
+            print(f"[AMAZON] Titulo da pagina: {self.driver.title}")
+
             product_selectors = [
                 "[data-component-type='s-search-result']",
+                "[data-asin]",
+                ".s-result-item[data-asin]",
                 ".s-result-item",
                 ".s-card-container",
                 ".sg-col-inner"
@@ -950,13 +992,17 @@ class PriceScraper:
             for selector in product_selectors:
                 try:
                     elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                    # Ignorar elementos sem data-asin quando possível (evita containers vazios)
                     if elements:
-                        product_elements = elements
+                        real = [e for e in elements if e.get_attribute("data-asin")]
+                        product_elements = real if real else elements
+                        print(f"[AMAZON] Seletor usado: {selector} ({len(product_elements)} elementos)")
                         break
                 except:
                     continue
 
             if not product_elements:
+                print(f"[AMAZON] Titulo da pagina: {self.driver.title}")
                 print("ERRO: Nenhum produto encontrado na Amazon")
                 return None
 
