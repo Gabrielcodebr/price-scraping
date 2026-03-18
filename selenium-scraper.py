@@ -2,6 +2,7 @@ import os
 import time
 import random
 import re
+import requests
 from supabase import create_client, Client
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -20,6 +21,8 @@ load_dotenv()
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 # Palavras que indicam que não é o produto puro (kits, acessórios, PCs completos)
 # REMOVIDOS intencionalmente: 'suporte', 'cooler', 'ventoinha', 'base', 'case', 'gabinete'
@@ -124,6 +127,49 @@ class PriceScraper:
         except Exception as e:
             print(f"ERRO CRITICO: Falha ao configurar driver - {e}")
             self.driver = None
+            return False
+
+    def ask_gemini_is_match(self, product_name, component_name, model):
+        """
+        Usa Gemini 2.0 Flash como segunda opinião quando is_exact_product_match rejeita.
+        Retorna True se Gemini confirma que é o mesmo produto, False caso contrário
+        ou em caso de erro.
+        """
+        if not GEMINI_API_KEY:
+            return False
+
+        try:
+            prompt = (
+                f'Você é especialista em hardware de computador. '
+                f'Decida se estes dois itens são o mesmo produto.\n\n'
+                f'Produto buscado: "{component_name}" (modelo: {model})\n'
+                f'Produto encontrado na loja: "{product_name}"\n\n'
+                f'Responda APENAS com SIM ou NÃO, sem mais texto.\n'
+                f'SIM = mesmo produto, nomenclatura diferente\n'
+                f'NÃO = produtos diferentes'
+            )
+
+            url = (
+                "https://generativelanguage.googleapis.com/v1beta/"
+                f"models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
+            )
+            body = {"contents": [{"parts": [{"text": prompt}]}]}
+
+            response = requests.post(url, json=body, timeout=10)
+            response.raise_for_status()
+
+            answer = (
+                response.json()
+                ["candidates"][0]["content"]["parts"][0]["text"]
+                .strip()
+                .upper()
+            )
+            result = answer.startswith("SIM")
+            print(f"[GEMINI] '{product_name[:60]}' → {answer} (match={result})")
+            return result
+
+        except Exception as e:
+            print(f"[GEMINI] Erro na validação: {e}")
             return False
 
     def wait_for_page_load(self, timeout=30):
@@ -743,15 +789,16 @@ class PriceScraper:
                     product_name = name_element.text.strip()
 
                     if modelo and not self.is_exact_product_match(product_name, modelo, marca, search_name=produto):
-                        rejected_count += 1
-                        # DEBUG: mostrar primeiros 3 produtos rejeitados
-                        if rejected_count <= 3:
-                            print(f"[KABUM DEBUG] Rejeitado #{rejected_count}: {product_name[:80]}")
-                            search_tokens = self.extract_key_tokens(modelo)
-                            product_normalized = product_name.lower().replace('-', '').replace('_', '')
-                            print(f"  Tokens busca: {search_tokens}")
-                            print(f"  Nome normalizado: {product_normalized[:100]}")
-                        continue
+                        if not self.ask_gemini_is_match(product_name, produto, modelo):
+                            rejected_count += 1
+                            # DEBUG: mostrar primeiros 3 produtos rejeitados
+                            if rejected_count <= 3:
+                                print(f"[KABUM DEBUG] Rejeitado #{rejected_count}: {product_name[:80]}")
+                                search_tokens = self.extract_key_tokens(modelo)
+                                product_normalized = product_name.lower().replace('-', '').replace('_', '')
+                                print(f"  Tokens busca: {search_tokens}")
+                                print(f"  Nome normalizado: {product_normalized[:100]}")
+                            continue
 
                     if not modelo:
                         search_words = search_term.lower().split()
@@ -942,15 +989,16 @@ class PriceScraper:
                         continue
 
                     if modelo and not self.is_exact_product_match(product_name, modelo, marca, search_name=produto):
-                        rejected_count += 1
-                        # DEBUG: mostrar primeiros 3 produtos rejeitados
-                        if rejected_count <= 3:
-                            print(f"[AMAZON DEBUG] Rejeitado #{rejected_count}: {product_name[:80]}")
-                            search_tokens = self.extract_key_tokens(modelo)
-                            product_normalized = product_name.lower().replace('-', '').replace('_', '')
-                            print(f"  Tokens busca: {search_tokens}")
-                            print(f"  Nome normalizado: {product_normalized[:100]}")
-                        continue
+                        if not self.ask_gemini_is_match(product_name, produto, modelo):
+                            rejected_count += 1
+                            # DEBUG: mostrar primeiros 3 produtos rejeitados
+                            if rejected_count <= 3:
+                                print(f"[AMAZON DEBUG] Rejeitado #{rejected_count}: {product_name[:80]}")
+                                search_tokens = self.extract_key_tokens(modelo)
+                                product_normalized = product_name.lower().replace('-', '').replace('_', '')
+                                print(f"  Tokens busca: {search_tokens}")
+                                print(f"  Nome normalizado: {product_normalized[:100]}")
+                            continue
 
                     if not modelo:
                         search_words = search_term.lower().split()
