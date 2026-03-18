@@ -138,39 +138,53 @@ class PriceScraper:
         if not GEMINI_API_KEY:
             return False
 
-        try:
-            prompt = (
-                f'Você é especialista em hardware de computador. '
-                f'Decida se estes dois itens são o mesmo produto.\n\n'
-                f'Produto buscado: "{component_name}" (modelo: {model})\n'
-                f'Produto encontrado na loja: "{product_name}"\n\n'
-                f'Responda APENAS com SIM ou NÃO, sem mais texto.\n'
-                f'SIM = mesmo produto, nomenclatura diferente\n'
-                f'NÃO = produtos diferentes'
-            )
+        prompt = (
+            f'Você é especialista em hardware de computador. '
+            f'Decida se estes dois itens são o mesmo produto.\n\n'
+            f'Produto buscado: "{component_name}" (modelo: {model})\n'
+            f'Produto encontrado na loja: "{product_name}"\n\n'
+            f'Responda APENAS com SIM ou NÃO, sem mais texto.\n'
+            f'SIM = mesmo produto, nomenclatura diferente\n'
+            f'NÃO = produtos diferentes'
+        )
 
-            url = (
-                "https://generativelanguage.googleapis.com/v1beta/"
-                f"models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
-            )
-            body = {"contents": [{"parts": [{"text": prompt}]}]}
+        url = (
+            "https://generativelanguage.googleapis.com/v1beta/"
+            f"models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
+        )
+        body = {"contents": [{"parts": [{"text": prompt}]}]}
 
-            response = requests.post(url, json=body, timeout=10)
-            response.raise_for_status()
+        max_retries = 2
+        for attempt in range(max_retries + 1):
+            try:
+                response = requests.post(url, json=body, timeout=10)
 
-            answer = (
-                response.json()
-                ["candidates"][0]["content"]["parts"][0]["text"]
-                .strip()
-                .upper()
-            )
-            result = answer.startswith("SIM")
-            print(f"[GEMINI] '{product_name[:60]}' → {answer} (match={result})")
-            return result
+                if response.status_code == 429:
+                    retry_after = int(response.headers.get("Retry-After", 60))
+                    wait = min(retry_after, 120)
+                    print(f"[GEMINI] Rate limit (429) — aguardando {wait}s antes de tentar novamente...")
+                    time.sleep(wait)
+                    continue
 
-        except Exception as e:
-            print(f"[GEMINI] Erro na validação: {e}")
-            return False
+                response.raise_for_status()
+
+                answer = (
+                    response.json()
+                    ["candidates"][0]["content"]["parts"][0]["text"]
+                    .strip()
+                    .upper()
+                )
+                result = answer.startswith("SIM")
+                print(f"[GEMINI] '{product_name[:60]}' → {answer} (match={result})")
+                time.sleep(1)  # pausa entre chamadas para não saturar a API
+                return result
+
+            except Exception as e:
+                print(f"[GEMINI] Erro na validação (tentativa {attempt + 1}): {e}")
+                if attempt < max_retries:
+                    time.sleep(5)
+
+        return False
 
     def wait_for_page_load(self, timeout=30):
         """Espera página carregar completamente"""
