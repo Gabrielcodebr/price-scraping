@@ -655,6 +655,12 @@ class PriceScraper:
     def get_kabum_product_url(self, container):
         """Extrai a URL direta do produto Kabum a partir do card."""
         try:
+            # Se o container já é o próprio <a> (fallback de links diretos)
+            if container.tag_name.lower() == "a":
+                href = container.get_attribute("href")
+                if href and "kabum.com.br" in href:
+                    return href
+            # Caso o container seja um card wrapper com link filho
             link = container.find_element(By.CSS_SELECTOR, "a")
             href = link.get_attribute("href")
             if href and "kabum.com.br" in href:
@@ -819,6 +825,10 @@ class PriceScraper:
                 "[class*='productCard']",
                 "[class*='ProductCard']",
                 "[class*='product-card']",
+                "article",
+                "[class*='CardProduct']",
+                "[class*='ItemProduct']",
+                "[class*='ProductItem']",
             ]
 
             product_containers = []
@@ -832,31 +842,24 @@ class PriceScraper:
                 except:
                     continue
 
-            # Fallback: usar links de produto como proxy de container
+            # Fallback: usar links de produto diretamente como containers
+            # Deduplicar por href em vez de subir na árvore DOM (a subida resolvia para
+            # o mesmo ancestral quando o KaBuM não usa as classes priceCard/Price/price,
+            # fazendo todos os links deduplicar para 1 container errado).
             if not product_containers:
                 try:
                     product_links = self.driver.find_elements(By.CSS_SELECTOR, "a[href*='/produto/']")
-                    # [FIX Bug#9] Subir na árvore DOM até encontrar o card real que contém
-                    # elementos de preço. parentElement simples não basta quando a âncora
-                    # está aninhada dentro de uma div intermediária (ex: div.productInfo > a).
-                    seen = set()
+                    seen_hrefs = set()
                     for link in product_links:
                         try:
-                            if not self.driver:
-                                break
-                            card = self.driver.execute_script("""
-                                var el = arguments[0].parentElement;
-                                for (var i = 0; i < 8 && el && el !== document.body; i++) {
-                                    if (el.querySelector('[class*="priceCard"],[class*="Price"],[class*="price"],[data-testid="price"]')) {
-                                        return el;
-                                    }
-                                    el = el.parentElement;
-                                }
-                                return arguments[0].parentElement;
-                            """, link)
-                            if card and card.id not in seen:
-                                seen.add(card.id)
-                                product_containers.append(card)
+                            href = link.get_attribute("href") or ""
+                            # Manter apenas links com ID numérico de produto (/produto/NNNNN)
+                            if not re.search(r'/produto/\d+', href):
+                                continue
+                            if href in seen_hrefs:
+                                continue
+                            seen_hrefs.add(href)
+                            product_containers.append(link)
                         except:
                             continue
                     if product_containers:
