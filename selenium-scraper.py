@@ -38,16 +38,22 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 # Substituído por frases específicas de PCs completos. Os demais casos (completo, kit, combo
 # workstation, etc.) já cobrem os sistemas montados que precisam ser filtrados.
 EXCLUSION_KEYWORDS = [
-    'completo', 'kit', 'combo', 'notebook', 'laptop',
+    'completo', 'combo', 'notebook', 'laptop',
     'workstation', 'all-in-one', 'torre', 'cpu completo',
     'bracket', 'shield', 'parafuso', 'cabo', 'adaptador', 'extensor', 'acessorio',
+    # 'kit' mantido intencionalmente — usuário seleciona UM pente de RAM por vez,
+    # então kits de 2+ pentes (2x8GB, 2x16GB etc.) são inválidos para o caso de uso.
+    # 'kit gamer/pc/computador' ficam como reforço para kits de PC completo.
+    'kit', 'kit gamer', 'kit pc', 'kit computador',
+    # [FIX Bug#8] 'desktop gamer' removido — bloqueava RAM com "Memória Desktop Gamer" no título
+    # PCs completos já são cobertos por 'computador gamer', 'pc gamer', 'desktop completo' etc.
     # Frases específicas para PCs completos (substituem 'pc ' e os genéricos 'computador'/'desktop')
     'mini pc', 'barebone pc',
     'pc gamer', 'pc completo', 'pc montado', 'pc computador',
     'pc intel', 'pc amd', 'pc core', 'pc ryzen',
     'computador completo', 'computador gamer', 'computador montado',
     'computador intel', 'computador amd', 'computador core', 'computador ryzen',
-    'desktop completo', 'desktop gamer', 'desktop montado',
+    'desktop completo', 'desktop montado',
     'desktop intel', 'desktop amd', 'desktop core', 'desktop ryzen',
 ]
 
@@ -175,7 +181,7 @@ class PriceScraper:
 
         url = (
             "https://generativelanguage.googleapis.com/v1beta/"
-            f"models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
+            f"models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
         )
         body = {"contents": [{"parts": [{"text": prompt}]}]}
 
@@ -379,6 +385,13 @@ class PriceScraper:
         except:
             pass
 
+    def extract_ddr_type(self, text):
+        """Extrai tipo DDR do texto (ddr3, ddr4, ddr5). Usado para evitar confundir gerações."""
+        if not text:
+            return None
+        match = re.search(r'\bddr(\d)\b', text.lower())
+        return f"ddr{match.group(1)}" if match else None
+
     def extract_storage_capacity(self, text):
         """Extrai capacidade de armazenamento do texto. Retorna valor normalizado em GB."""
         if not text:
@@ -526,6 +539,17 @@ class PriceScraper:
             if product_capacity is None or product_capacity != search_capacity:
                 print(f"  [MATCH] REJEITADO (capacidade {search_capacity}GB != {product_capacity}GB): {product_name[:80]}")
                 return False
+
+        # [FIX Bug#10] Checar geração DDR quando o modelo é genérico (ex: "Vengeance", "Fury Beast").
+        # Sem isso, DDR4 e DDR5 do mesmo produto ficam intercambiáveis no matching.
+        # Só rejeita quando AMBOS têm DDR explícito e são diferentes.
+        search_ddr = self.extract_ddr_type(search_model)
+        if search_ddr is None and search_name:
+            search_ddr = self.extract_ddr_type(search_name)
+        product_ddr = self.extract_ddr_type(product_name)
+        if search_ddr is not None and product_ddr is not None and search_ddr != product_ddr:
+            print(f"  [MATCH] REJEITADO (tipo {search_ddr.upper()} != {product_ddr.upper()}): {product_name[:80]}")
+            return False
 
         # [FIX Bug#5] Pular brand check para fabricantes de chip (NVIDIA, AMD, Intel).
         # Seus produtos são vendidos por terceiros (ASUS, MSI, Gigabyte, ZOTAC etc.)
@@ -800,18 +824,31 @@ class PriceScraper:
             if not product_containers:
                 try:
                     product_links = self.driver.find_elements(By.CSS_SELECTOR, "a[href*='/produto/']")
-                    # Pegar o pai de cada link (o card real)
+                    # [FIX Bug#9] Subir na árvore DOM até encontrar o card real que contém
+                    # elementos de preço. parentElement simples não basta quando a âncora
+                    # está aninhada dentro de uma div intermediária (ex: div.productInfo > a).
                     seen = set()
                     for link in product_links:
                         try:
-                            parent = self.driver.execute_script("return arguments[0].parentElement;", link)
-                            if parent and id(parent) not in seen:
-                                seen.add(id(parent))
-                                product_containers.append(parent)
+                            if not self.driver:
+                                break
+                            card = self.driver.execute_script("""
+                                var el = arguments[0].parentElement;
+                                for (var i = 0; i < 8 && el && el !== document.body; i++) {
+                                    if (el.querySelector('[class*="priceCard"],[class*="Price"],[class*="price"],[data-testid="price"]')) {
+                                        return el;
+                                    }
+                                    el = el.parentElement;
+                                }
+                                return arguments[0].parentElement;
+                            """, link)
+                            if card and card.id not in seen:
+                                seen.add(card.id)
+                                product_containers.append(card)
                         except:
                             continue
                     if product_containers:
-                        print(f"[KABUM] Seletor fallback: a[href*='/produto/'] (pai) — {len(product_containers)} containers")
+                        print(f"[KABUM] Seletor fallback: a[href*='/produto/'] — {len(product_containers)} containers")
                 except:
                     pass
 
