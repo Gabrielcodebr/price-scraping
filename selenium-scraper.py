@@ -40,7 +40,9 @@ GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 EXCLUSION_KEYWORDS = [
     'completo', 'combo', 'notebook', 'laptop',
     'workstation', 'all-in-one', 'torre', 'cpu completo',
-    'bracket', 'shield', 'parafuso', 'cabo', 'adaptador', 'extensor', 'acessorio',
+    'bracket', 'shield', 'parafuso', 'adaptador', 'extensor', 'acessorio',
+    # 'cabo' removido — PSUs frequentemente mencionam "com cabo 12V-2x6" no título Amazon,
+    # causando falsos negativos. Acessórios de cabo puro são rejeitados pelo token matching.
     # 'kit' mantido intencionalmente — usuário seleciona UM pente de RAM por vez,
     # então kits de 2+ pentes (2x8GB, 2x16GB etc.) são inválidos para o caso de uso.
     # 'kit gamer/pc/computador' ficam como reforço para kits de PC completo.
@@ -147,10 +149,10 @@ class PriceScraper:
 
     def ask_gemini_is_match(self, product_name, component_name, model):
         """
-        Usa Groq (llama-3.1-8b-instant) como segunda opinião quando is_exact_product_match rejeita.
+        Usa Groq (llama-3.3-70b-versatile) como segunda opinião quando is_exact_product_match rejeita.
         Retorna True se o LLM confirma que é o mesmo produto, False caso contrário
         ou em caso de erro.
-        Free tier Groq: 30 RPM, 14.400 RPD — muito mais generoso que Gemini.
+        Free tier Groq: 30 RPM, 1.000 RPD — muito mais generoso que Gemini (20 RPD).
         """
         if not GROQ_API_KEY:
             return False
@@ -171,12 +173,16 @@ class PriceScraper:
 
         prompt = (
             f'Você é especialista em hardware de computador. '
-            f'Decida se estes dois itens são o mesmo produto.\n\n'
+            f'Decida se estes dois itens são EXATAMENTE o mesmo produto.\n\n'
             f'Produto buscado: "{component_name}" (modelo: {model})\n'
             f'Produto encontrado na loja: "{product_name}"\n\n'
+            f'REGRAS OBRIGATÓRIAS — responda NÃO se qualquer uma for verdade:\n'
+            f'- As marcas são diferentes (ex: XPG vs C3Tech, Corsair vs Redragon)\n'
+            f'- O modelo é diferente (ex: Pylon vs Kyber, Core Reactor vs PS-G850)\n'
+            f'- É apenas um produto similar da mesma categoria (ex: outra fonte 550W)\n\n'
             f'Responda APENAS com SIM ou NÃO, sem mais texto.\n'
-            f'SIM = mesmo produto, nomenclatura diferente\n'
-            f'NÃO = produtos diferentes'
+            f'SIM = definitivamente o mesmo produto, com nome abreviado ou variante\n'
+            f'NÃO = produto diferente, marca diferente, ou modelo diferente'
         )
 
         url = "https://api.groq.com/openai/v1/chat/completions"
@@ -185,7 +191,7 @@ class PriceScraper:
             "Content-Type": "application/json",
         }
         body = {
-            "model": "llama-3.1-8b-instant",
+            "model": "llama-3.3-70b-versatile",
             "messages": [{"role": "user", "content": prompt}],
             "max_tokens": 5,
             "temperature": 0,
@@ -902,6 +908,9 @@ class PriceScraper:
                             continue
                     else:
                         product_name = name_element.text.strip()
+
+                    if not product_name:
+                        continue
 
                     price_selectors = [
                         ".priceCard",
