@@ -154,37 +154,29 @@ class PriceScraper:
         )
         body = {"contents": [{"parts": [{"text": prompt}]}]}
 
-        max_retries = 2
-        for attempt in range(max_retries + 1):
-            try:
-                response = requests.post(url, json=body, timeout=10)
+        try:
+            response = requests.post(url, json=body, timeout=10)
 
-                if response.status_code == 429:
-                    retry_after = int(response.headers.get("Retry-After", 60))
-                    wait = min(retry_after, 120)
-                    print(f"[GEMINI] Rate limit (429) — aguardando {wait}s antes de tentar novamente...")
-                    time.sleep(wait)
-                    continue
+            if response.status_code == 429:
+                print(f"[GEMINI] Rate limit (429) — pulando validacao para nao travar o scraper")
+                return False
 
-                response.raise_for_status()
+            response.raise_for_status()
 
-                answer = (
-                    response.json()
-                    ["candidates"][0]["content"]["parts"][0]["text"]
-                    .strip()
-                    .upper()
-                )
-                result = answer.startswith("SIM")
-                print(f"[GEMINI] '{product_name[:60]}' → {answer} (match={result})")
-                time.sleep(1)  # pausa entre chamadas para não saturar a API
-                return result
+            answer = (
+                response.json()
+                ["candidates"][0]["content"]["parts"][0]["text"]
+                .strip()
+                .upper()
+            )
+            result = answer.startswith("SIM")
+            print(f"[GEMINI] '{product_name[:60]}' → {answer} (match={result})")
+            time.sleep(2)  # pausa para nao saturar a API
+            return result
 
-            except Exception as e:
-                print(f"[GEMINI] Erro na validação (tentativa {attempt + 1}): {e}")
-                if attempt < max_retries:
-                    time.sleep(5)
-
-        return False
+        except Exception as e:
+            print(f"[GEMINI] Erro na validacao: {e}")
+            return False
 
     def wait_for_page_load(self, timeout=30):
         """Espera página carregar completamente"""
@@ -795,8 +787,8 @@ class PriceScraper:
 
             print(f"[KABUM] Total de produtos na pagina: {len(product_containers)}")
 
-            valid_products = []
-            rejected_count = 0
+            # 1ª passagem: coletar todos os candidatos com nome e preço
+            all_candidates = []
 
             for container in product_containers:
                 try:
@@ -824,7 +816,6 @@ class PriceScraper:
                             continue
 
                     if not name_element:
-                        # Último recurso: texto do container inteiro
                         raw_text = container.text.strip().split('\n')[0]
                         if raw_text:
                             product_name = raw_text
@@ -832,30 +823,6 @@ class PriceScraper:
                             continue
                     else:
                         product_name = name_element.text.strip()
-
-                    if modelo and not self.is_exact_product_match(product_name, modelo, marca, search_name=produto):
-                        if not self.ask_gemini_is_match(product_name, produto, modelo):
-                            rejected_count += 1
-                            # DEBUG: mostrar primeiros 3 produtos rejeitados
-                            if rejected_count <= 3:
-                                print(f"[KABUM DEBUG] Rejeitado #{rejected_count}: {product_name[:80]}")
-                                search_tokens = self.extract_key_tokens(modelo)
-                                product_normalized = product_name.lower().replace('-', '').replace('_', '')
-                                print(f"  Tokens busca: {search_tokens}")
-                                print(f"  Nome normalizado: {product_normalized[:100]}")
-                            continue
-
-                    if not modelo:
-                        search_words = search_term.lower().split()
-                        product_name_lower = product_name.lower()
-
-                        if not all(word in product_name_lower for word in search_words):
-                            rejected_count += 1
-                            continue
-
-                        if any(keyword in product_name_lower for keyword in EXCLUSION_KEYWORDS):
-                            rejected_count += 1
-                            continue
 
                     price_selectors = [
                         ".priceCard",
@@ -883,10 +850,9 @@ class PriceScraper:
                     if price_element:
                         price_text = price_element.text.strip()
                         price_value = self.clean_price_text(price_text)
-
                         if price_value > 0:
                             product_url = self.get_kabum_product_url(container)
-                            valid_products.append({
+                            all_candidates.append({
                                 "name": product_name,
                                 "price": price_value,
                                 "price_text": price_text,
@@ -896,7 +862,36 @@ class PriceScraper:
                 except Exception:
                     continue
 
-            print(f"[KABUM] Produtos validos: {len(valid_products)} | Rejeitados: {rejected_count}")
+            # 2ª passagem: filtrar por matching — sem Gemini
+            valid_products = []
+            rejected_candidates = []
+
+            for c in all_candidates:
+                product_name = c["name"]
+                if modelo:
+                    if self.is_exact_product_match(product_name, modelo, marca, search_name=produto):
+                        valid_products.append(c)
+                    else:
+                        rejected_candidates.append(c)
+                else:
+                    search_words = search_term.lower().split()
+                    product_name_lower = product_name.lower()
+                    if (all(word in product_name_lower for word in search_words)
+                            and not any(kw in product_name_lower for kw in EXCLUSION_KEYWORDS)):
+                        valid_products.append(c)
+                    else:
+                        rejected_candidates.append(c)
+
+            # Fallback Gemini: só se matching normal falhou completamente
+            if not valid_products and rejected_candidates and modelo:
+                rejected_candidates.sort(key=lambda x: x["price"])
+                print(f"[KABUM] Matching normal: 0 resultados. Tentando Gemini nos {min(3, len(rejected_candidates))} candidatos mais baratos...")
+                for c in rejected_candidates[:3]:
+                    if self.ask_gemini_is_match(c["name"], produto, modelo):
+                        valid_products.append(c)
+                        break
+
+            print(f"[KABUM] Produtos validos: {len(valid_products)} | Rejeitados: {len(rejected_candidates)}")
 
             if not valid_products:
                 print("[KABUM] Produto nao encontrado")
@@ -1008,10 +1003,10 @@ class PriceScraper:
 
             print(f"[AMAZON] Total de produtos na pagina: {len(product_elements)}")
 
-            valid_products = []
-            rejected_count = 0
+            # 1ª passagem: coletar todos os candidatos com nome e preço
+            all_candidates = []
 
-            for product in product_elements[:60]:  # Aumentado de 40 para 60
+            for product in product_elements[:60]:
                 try:
                     name_selectors = [
                         "h2 a span",
@@ -1028,7 +1023,6 @@ class PriceScraper:
                             name_element = product.find_element(By.CSS_SELECTOR, selector)
                             product_name = name_element.text
                             if product_name:
-                                # Tentar pegar href do ancestral <a> ou do <a> dentro do h2
                                 try:
                                     if name_element.tag_name == "a":
                                         product_link = name_element.get_attribute("href")
@@ -1047,30 +1041,6 @@ class PriceScraper:
 
                     if not product_name:
                         continue
-
-                    if modelo and not self.is_exact_product_match(product_name, modelo, marca, search_name=produto):
-                        if not self.ask_gemini_is_match(product_name, produto, modelo):
-                            rejected_count += 1
-                            # DEBUG: mostrar primeiros 3 produtos rejeitados
-                            if rejected_count <= 3:
-                                print(f"[AMAZON DEBUG] Rejeitado #{rejected_count}: {product_name[:80]}")
-                                search_tokens = self.extract_key_tokens(modelo)
-                                product_normalized = product_name.lower().replace('-', '').replace('_', '')
-                                print(f"  Tokens busca: {search_tokens}")
-                                print(f"  Nome normalizado: {product_normalized[:100]}")
-                            continue
-
-                    if not modelo:
-                        search_words = search_term.lower().split()
-                        product_name_lower = product_name.lower()
-
-                        if not all(word in product_name_lower for word in search_words):
-                            rejected_count += 1
-                            continue
-
-                        if any(keyword in product_name_lower for keyword in EXCLUSION_KEYWORDS):
-                            rejected_count += 1
-                            continue
 
                     price_value = 0
                     price_text = ""
@@ -1123,7 +1093,7 @@ class PriceScraper:
                                 continue
 
                     if price_value > 0:
-                        valid_products.append({
+                        all_candidates.append({
                             "name": product_name,
                             "price": price_value,
                             "price_text": price_text,
@@ -1133,7 +1103,36 @@ class PriceScraper:
                 except Exception:
                     continue
 
-            print(f"[AMAZON] Produtos validos: {len(valid_products)} | Rejeitados: {rejected_count}")
+            # 2ª passagem: filtrar por matching — sem Gemini
+            valid_products = []
+            rejected_candidates = []
+
+            for c in all_candidates:
+                product_name = c["name"]
+                if modelo:
+                    if self.is_exact_product_match(product_name, modelo, marca, search_name=produto):
+                        valid_products.append(c)
+                    else:
+                        rejected_candidates.append(c)
+                else:
+                    search_words = search_term.lower().split()
+                    product_name_lower = product_name.lower()
+                    if (all(word in product_name_lower for word in search_words)
+                            and not any(kw in product_name_lower for kw in EXCLUSION_KEYWORDS)):
+                        valid_products.append(c)
+                    else:
+                        rejected_candidates.append(c)
+
+            # Fallback Gemini: só se matching normal falhou completamente
+            if not valid_products and rejected_candidates and modelo:
+                rejected_candidates.sort(key=lambda x: x["price"])
+                print(f"[AMAZON] Matching normal: 0 resultados. Tentando Gemini nos {min(3, len(rejected_candidates))} candidatos mais baratos...")
+                for c in rejected_candidates[:3]:
+                    if self.ask_gemini_is_match(c["name"], produto, modelo):
+                        valid_products.append(c)
+                        break
+
+            print(f"[AMAZON] Produtos validos: {len(valid_products)} | Rejeitados: {len(rejected_candidates)}")
 
             if not valid_products:
                 print("[AMAZON] Produto nao encontrado")
