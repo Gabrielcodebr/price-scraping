@@ -842,42 +842,81 @@ class PriceScraper:
                 except:
                     continue
 
-            # Fallback: usar links de produto diretamente como containers
-            # Deduplicar por href em vez de subir na árvore DOM (a subida resolvia para
-            # o mesmo ancestral quando o KaBuM não usa as classes priceCard/Price/price,
-            # fazendo todos os links deduplicar para 1 container errado).
+            # Fallback: extrai nome + preço via JS em um único call (evita race condition
+            # com o re-render do React: se o DOM mudar entre o JS e o .text do Selenium,
+            # os dados já estariam perdidos numa abordagem em dois passos).
+            # Retorna lista de dicts {href, name, price} em vez de WebElements.
+            kabum_js_data = []
             if not product_containers:
                 try:
-                    product_links = self.driver.find_elements(By.CSS_SELECTOR, "a[href*='/produto/']")
-                    seen_hrefs = set()
-                    for link in product_links:
-                        try:
-                            href = link.get_attribute("href") or ""
-                            # Manter apenas links com ID numérico de produto (/produto/NNNNN)
-                            if not re.search(r'/produto/\d+', href):
-                                continue
-                            if href in seen_hrefs:
-                                continue
-                            seen_hrefs.add(href)
-                            product_containers.append(link)
-                        except:
-                            continue
-                    if product_containers:
-                        print(f"[KABUM] Seletor fallback: a[href*='/produto/'] — {len(product_containers)} containers")
-                except:
-                    pass
+                    if self.driver:
+                        kabum_js_data = self.driver.execute_script("""
+                            var results = [];
+                            var seen = {};
+                            var links = document.querySelectorAll('a[href*="/produto/"]');
+                            for (var i = 0; i < links.length; i++) {
+                                var link = links[i];
+                                var href = link.href || '';
+                                if (!/\\/produto\\/\\d+/.test(href)) continue;
+                                if (seen[href]) continue;
+                                seen[href] = true;
 
-            if not product_containers:
+                                // Subir até o card que tem texto + preço
+                                var card = link.parentElement;
+                                for (var j = 0; j < 8 && card && card !== document.body; j++) {
+                                    var t = (card.innerText || '').trim();
+                                    if (t.length > 30 && t.length < 3000 && /R\\$/.test(t)) break;
+                                    card = card.parentElement;
+                                }
+                                if (!card || card === document.body) card = link.parentElement;
+
+                                var text = (card.innerText || '').trim();
+                                // Pegar primeira linha com letras (não preço, não vazia)
+                                var lines = text.split('\\n')
+                                    .map(function(l){ return l.trim(); })
+                                    .filter(function(l){ return l.length > 3 && /[a-zA-Z]/.test(l) && !/^R\\$/.test(l); });
+                                var name = lines.length > 0 ? lines[0] : '';
+                                var pm = text.match(/R\\$\\s*[\\d\\.]+,[\\d]{2}/);
+                                var price = pm ? pm[0] : '';
+                                if (name) results.push({href: href, name: name, price: price});
+                            }
+                            return results;
+                        """) or []
+                    if kabum_js_data:
+                        print(f"[KABUM] Seletor fallback: a[href*='/produto/'] — {len(kabum_js_data)} containers")
+                except Exception:
+                    kabum_js_data = []
+
+            if not product_containers and not kabum_js_data:
                 page_title = self.driver.title
                 print(f"[KABUM] Titulo da pagina: {page_title}")
                 print("ERRO: Nenhum produto encontrado na Kabum")
                 return None
 
-            print(f"[KABUM] Total de produtos na pagina: {len(product_containers)}")
+            total = len(product_containers) if product_containers else len(kabum_js_data)
+            print(f"[KABUM] Total de produtos na pagina: {total}")
 
             # 1ª passagem: coletar todos os candidatos com nome e preço
             all_candidates = []
 
+            # Caminho A: dados pré-extraídos pelo JS fallback (nome+preço já em string)
+            for item in kabum_js_data:
+                product_name = (item.get('name') or '').strip()
+                price_text = (item.get('price') or '').strip()
+                if not product_name or not price_text:
+                    continue
+                price_value = self.clean_price_text(price_text)
+                if price_value > 0:
+                    all_candidates.append({
+                        "name": product_name,
+                        "price": price_value,
+                        "price_text": price_text,
+                        "url": item.get('href'),
+                    })
+                else:
+                    print(f"[KABUM DEBUG] Preco nao encontrado para: {product_name[:60]}")
+
+            # Caminho B: containers WebElement (seletores primários funcionaram)
             for container in product_containers:
                 try:
                     name_selectors = [
