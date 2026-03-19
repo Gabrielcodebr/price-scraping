@@ -32,12 +32,20 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 # [FIX Bug#1/#4] 'computador' e 'desktop' foram substituídos por frases específicas
 # para evitar rejeitar descrições legítimas como "caixa de computador ATX" ou
 # "processador de desktop Core i7".
+#
+# [FIX Bug#6] 'pc ' removido — era genérico demais e rejeitava gabinetes legítimos cujos
+# títulos contêm "Capa para PC", "Capa PC" ou "PC Case" (descrição do tipo de produto).
+# Substituído por frases específicas de PCs completos. Os demais casos (completo, kit, combo
+# workstation, etc.) já cobrem os sistemas montados que precisam ser filtrados.
 EXCLUSION_KEYWORDS = [
-    'pc ', 'completo', 'kit', 'combo', 'notebook', 'laptop',
+    'completo', 'kit', 'combo', 'notebook', 'laptop',
     'workstation', 'all-in-one', 'torre', 'cpu completo',
     'bracket', 'shield', 'parafuso', 'cabo', 'adaptador', 'extensor', 'acessorio',
-    # Frases específicas para PCs completos (substituem 'computador' e 'desktop' genéricos)
-    'computador completo', 'computador gamer', 'computador montado', 'pc computador',
+    # Frases específicas para PCs completos (substituem 'pc ' e os genéricos 'computador'/'desktop')
+    'mini pc', 'barebone pc',
+    'pc gamer', 'pc completo', 'pc montado', 'pc computador',
+    'pc intel', 'pc amd', 'pc core', 'pc ryzen',
+    'computador completo', 'computador gamer', 'computador montado',
     'computador intel', 'computador amd', 'computador core', 'computador ryzen',
     'desktop completo', 'desktop gamer', 'desktop montado',
     'desktop intel', 'desktop amd', 'desktop core', 'desktop ryzen',
@@ -84,6 +92,8 @@ class PriceScraper:
 
     def __init__(self):
         self.driver = None
+        self._gemini_blocked_until = 0
+        self._last_gemini_call = 0
         self.setup_driver()
 
     def setup_driver(self):
@@ -138,6 +148,21 @@ class PriceScraper:
         if not GEMINI_API_KEY:
             return False
 
+        # Cooldown de segurança após 429 (60s)
+        if time.time() < self._gemini_blocked_until:
+            remaining = int(self._gemini_blocked_until - time.time())
+            print(f"[GEMINI] Cooldown ativo — {remaining}s restantes")
+            return False
+
+        # Rate limiter proativo: garante intervalo mínimo de 13s entre chamadas (~4.6 RPM)
+        # Gemini 2.0 Flash free tier: ~5 RPM — margem de segurança incluída
+        if self._last_gemini_call > 0:
+            elapsed = time.time() - self._last_gemini_call
+            if elapsed < 13:
+                wait = 13 - elapsed
+                print(f"[GEMINI] Rate limiter — aguardando {wait:.1f}s")
+                time.sleep(wait)
+
         prompt = (
             f'Você é especialista em hardware de computador. '
             f'Decida se estes dois itens são o mesmo produto.\n\n'
@@ -154,11 +179,14 @@ class PriceScraper:
         )
         body = {"contents": [{"parts": [{"text": prompt}]}]}
 
+        self._last_gemini_call = time.time()
+
         try:
             response = requests.post(url, json=body, timeout=10)
 
             if response.status_code == 429:
-                print(f"[GEMINI] Rate limit (429) — pulando validacao para nao travar o scraper")
+                self._gemini_blocked_until = time.time() + 60
+                print(f"[GEMINI] Rate limit (429) — cooldown de 60s ativado")
                 return False
 
             response.raise_for_status()
@@ -171,7 +199,6 @@ class PriceScraper:
             )
             result = answer.startswith("SIM")
             print(f"[GEMINI] '{product_name[:60]}' → {answer} (match={result})")
-            time.sleep(2)  # pausa para nao saturar a API
             return result
 
         except Exception as e:
