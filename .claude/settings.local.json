@@ -2,7 +2,8 @@
   "permissions": {
     "allow": [
       "WebFetch(domain:ai.google.dev)",
-      "WebFetch(domain:console.groq.com)"
+      "WebFetch(domain:console.groq.com)",
+      "WebFetch(domain:discuss.ai.google.dev)"
     ]
   }
 }

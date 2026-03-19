@@ -22,7 +22,7 @@ SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 
 # Palavras que indicam que não é o produto puro (kits, acessórios, PCs completos)
 # REMOVIDOS intencionalmente: 'suporte', 'cooler', 'ventoinha', 'base', 'case', 'gabinete'
@@ -98,8 +98,8 @@ class PriceScraper:
 
     def __init__(self):
         self.driver = None
-        self._gemini_blocked_until = 0
-        self._last_gemini_call = 0
+        self._llm_blocked_until = 0
+        self._last_llm_call = 0
         self.setup_driver()
 
     def setup_driver(self):
@@ -147,26 +147,26 @@ class PriceScraper:
 
     def ask_gemini_is_match(self, product_name, component_name, model):
         """
-        Usa Gemini 2.0 Flash como segunda opinião quando is_exact_product_match rejeita.
-        Retorna True se Gemini confirma que é o mesmo produto, False caso contrário
+        Usa Groq (llama-3.1-8b-instant) como segunda opinião quando is_exact_product_match rejeita.
+        Retorna True se o LLM confirma que é o mesmo produto, False caso contrário
         ou em caso de erro.
+        Free tier Groq: 30 RPM, 14.400 RPD — muito mais generoso que Gemini.
         """
-        if not GEMINI_API_KEY:
+        if not GROQ_API_KEY:
             return False
 
         # Cooldown de segurança após 429 (60s)
-        if time.time() < self._gemini_blocked_until:
-            remaining = int(self._gemini_blocked_until - time.time())
-            print(f"[GEMINI] Cooldown ativo — {remaining}s restantes")
+        if time.time() < self._llm_blocked_until:
+            remaining = int(self._llm_blocked_until - time.time())
+            print(f"[LLM] Cooldown ativo — {remaining}s restantes")
             return False
 
-        # Rate limiter proativo: garante intervalo mínimo de 13s entre chamadas (~4.6 RPM)
-        # Gemini 2.0 Flash free tier: ~5 RPM — margem de segurança incluída
-        if self._last_gemini_call > 0:
-            elapsed = time.time() - self._last_gemini_call
-            if elapsed < 13:
-                wait = 13 - elapsed
-                print(f"[GEMINI] Rate limiter — aguardando {wait:.1f}s")
+        # Rate limiter proativo: intervalo mínimo de 2s entre chamadas (~30 RPM)
+        if self._last_llm_call > 0:
+            elapsed = time.time() - self._last_llm_call
+            if elapsed < 2:
+                wait = 2 - elapsed
+                print(f"[LLM] Rate limiter — aguardando {wait:.1f}s")
                 time.sleep(wait)
 
         prompt = (
@@ -179,36 +179,42 @@ class PriceScraper:
             f'NÃO = produtos diferentes'
         )
 
-        url = (
-            "https://generativelanguage.googleapis.com/v1beta/"
-            f"models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
-        )
-        body = {"contents": [{"parts": [{"text": prompt}]}]}
+        url = "https://api.groq.com/openai/v1/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {GROQ_API_KEY}",
+            "Content-Type": "application/json",
+        }
+        body = {
+            "model": "llama-3.1-8b-instant",
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": 5,
+            "temperature": 0,
+        }
 
-        self._last_gemini_call = time.time()
+        self._last_llm_call = time.time()
 
         try:
-            response = requests.post(url, json=body, timeout=10)
+            response = requests.post(url, json=body, headers=headers, timeout=10)
 
             if response.status_code == 429:
-                self._gemini_blocked_until = time.time() + 60
-                print(f"[GEMINI] Rate limit (429) — cooldown de 60s ativado")
+                self._llm_blocked_until = time.time() + 60
+                print(f"[LLM] Rate limit (429) — cooldown de 60s ativado")
                 return False
 
             response.raise_for_status()
 
             answer = (
                 response.json()
-                ["candidates"][0]["content"]["parts"][0]["text"]
+                ["choices"][0]["message"]["content"]
                 .strip()
                 .upper()
             )
             result = answer.startswith("SIM")
-            print(f"[GEMINI] '{product_name[:60]}' → {answer} (match={result})")
+            print(f"[LLM] '{product_name[:60]}' → {answer} (match={result})")
             return result
 
         except Exception as e:
-            print(f"[GEMINI] Erro na validacao: {e}")
+            print(f"[LLM] Erro na validacao: {e}")
             return False
 
     def wait_for_page_load(self, timeout=30):
@@ -920,17 +926,31 @@ class PriceScraper:
                         except:
                             continue
 
+                    price_text = ""
+                    price_value = 0
+
                     if price_element:
                         price_text = price_element.text.strip()
                         price_value = self.clean_price_text(price_text)
-                        if price_value > 0:
-                            product_url = self.get_kabum_product_url(container)
-                            all_candidates.append({
-                                "name": product_name,
-                                "price": price_value,
-                                "price_text": price_text,
-                                "url": product_url,
-                            })
+
+                    # Fallback: extrair preço do texto bruto do container via regex
+                    if price_value == 0:
+                        raw_text = container.text
+                        price_match = re.search(r'R\$\s*[\d\.]+,\d{2}', raw_text)
+                        if price_match:
+                            price_text = price_match.group(0)
+                            price_value = self.clean_price_text(price_text)
+
+                    if price_value > 0:
+                        product_url = self.get_kabum_product_url(container)
+                        all_candidates.append({
+                            "name": product_name,
+                            "price": price_value,
+                            "price_text": price_text,
+                            "url": product_url,
+                        })
+                    else:
+                        print(f"[KABUM DEBUG] Preco nao encontrado para: {product_name[:60]}")
 
                 except Exception:
                     continue
@@ -956,13 +976,19 @@ class PriceScraper:
                         rejected_candidates.append(c)
 
             # Fallback Gemini: só se matching normal falhou completamente
+            # Produtos excluídos por keyword (kit, laptop, etc.) nunca vão ao Gemini
             if not valid_products and rejected_candidates and modelo:
-                rejected_candidates.sort(key=lambda x: x["price"])
-                print(f"[KABUM] Matching normal: 0 resultados. Tentando Gemini nos {min(3, len(rejected_candidates))} candidatos mais baratos...")
-                for c in rejected_candidates[:3]:
-                    if self.ask_gemini_is_match(c["name"], produto, modelo):
-                        valid_products.append(c)
-                        break
+                gemini_candidates = [
+                    c for c in rejected_candidates
+                    if not any(kw in c["name"].lower() for kw in EXCLUSION_KEYWORDS)
+                ]
+                gemini_candidates.sort(key=lambda x: x["price"])
+                if gemini_candidates:
+                    print(f"[KABUM] Matching normal: 0 resultados. Tentando LLM nos {min(3, len(gemini_candidates))} candidatos mais baratos...")
+                    for c in gemini_candidates[:3]:
+                        if self.ask_gemini_is_match(c["name"], produto, modelo):
+                            valid_products.append(c)
+                            break
 
             print(f"[KABUM] Produtos validos: {len(valid_products)} | Rejeitados: {len(rejected_candidates)}")
 
@@ -1197,13 +1223,19 @@ class PriceScraper:
                         rejected_candidates.append(c)
 
             # Fallback Gemini: só se matching normal falhou completamente
+            # Produtos excluídos por keyword (kit, laptop, etc.) nunca vão ao Gemini
             if not valid_products and rejected_candidates and modelo:
-                rejected_candidates.sort(key=lambda x: x["price"])
-                print(f"[AMAZON] Matching normal: 0 resultados. Tentando Gemini nos {min(3, len(rejected_candidates))} candidatos mais baratos...")
-                for c in rejected_candidates[:3]:
-                    if self.ask_gemini_is_match(c["name"], produto, modelo):
-                        valid_products.append(c)
-                        break
+                gemini_candidates = [
+                    c for c in rejected_candidates
+                    if not any(kw in c["name"].lower() for kw in EXCLUSION_KEYWORDS)
+                ]
+                gemini_candidates.sort(key=lambda x: x["price"])
+                if gemini_candidates:
+                    print(f"[AMAZON] Matching normal: 0 resultados. Tentando LLM nos {min(3, len(gemini_candidates))} candidatos mais baratos...")
+                    for c in gemini_candidates[:3]:
+                        if self.ask_gemini_is_match(c["name"], produto, modelo):
+                            valid_products.append(c)
+                            break
 
             print(f"[AMAZON] Produtos validos: {len(valid_products)} | Rejeitados: {len(rejected_candidates)}")
 
