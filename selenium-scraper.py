@@ -422,6 +422,7 @@ class PriceScraper:
 
         for keyword in EXCLUSION_KEYWORDS:
             if keyword in product_name_lower:
+                print(f"  [MATCH] REJEITADO (exclusion '{keyword}'): {product_name[:80]}")
                 return False
 
         search_tokens = self.extract_key_tokens(search_model)
@@ -434,6 +435,7 @@ class PriceScraper:
 
         for token in search_tokens:
             if token not in product_name_normalized:
+                print(f"  [MATCH] REJEITADO (token '{token}' ausente): {product_name[:80]}")
                 return False
 
         search_variants = [t for t in search_tokens if t in VARIANT_SUFFIXES]
@@ -451,6 +453,7 @@ class PriceScraper:
                 # Padrões: "7600xt", "7600 xt", "7600-xt"
                 pattern = re.compile(r'\b' + re.escape(num) + r'[\s\-]?' + re.escape(variant) + r'\b')
                 if pattern.search(product_name_normalized):
+                    print(f"  [MATCH] REJEITADO (variante '{num}+{variant}'): {product_name[:80]}")
                     return False
 
         search_numeric = [t for t in search_tokens if re.search(r'\d', t)]
@@ -465,10 +468,12 @@ class PriceScraper:
                 if prod_num.startswith(search_num) and len(prod_num) > len(search_num):
                     suffix = prod_num[len(search_num):]
                     if suffix in VARIANT_SUFFIXES:
+                        print(f"  [MATCH] REJEITADO (variante numerica '{prod_num}' != '{search_num}'): {product_name[:80]}")
                         return False
 
             if not found_match:
                 if search_num not in product_name_normalized:
+                    print(f"  [MATCH] REJEITADO (num '{search_num}' ausente): {product_name[:80]}")
                     return False
 
                 # [FIX Bug#2] Usar word boundary (\b) em vez de substring simples (`in`).
@@ -480,6 +485,7 @@ class PriceScraper:
                     )
                     if variant_pattern.search(product_name_normalized):
                         if variant not in [t for t in search_tokens if t in VARIANT_SUFFIXES]:
+                            print(f"  [MATCH] REJEITADO (variante word-boundary '{search_num}+{variant}'): {product_name[:80]}")
                             return False
 
         # [FIX Bug#3] Extrair capacidade também do nome completo do componente (search_name)
@@ -491,6 +497,7 @@ class PriceScraper:
 
         if search_capacity is not None:
             if product_capacity is None or product_capacity != search_capacity:
+                print(f"  [MATCH] REJEITADO (capacidade {search_capacity}GB != {product_capacity}GB): {product_name[:80]}")
                 return False
 
         # [FIX Bug#5] Pular brand check para fabricantes de chip (NVIDIA, AMD, Intel).
@@ -499,6 +506,7 @@ class PriceScraper:
         if search_brand:
             if search_brand.lower() not in CHIP_MANUFACTURERS:
                 if search_brand.lower() not in product_name_lower:
+                    print(f"  [MATCH] REJEITADO (marca '{search_brand}' ausente): {product_name[:80]}")
                     return False
 
         return True
@@ -517,8 +525,9 @@ class PriceScraper:
         """
         try:
             # Encontrar índice da label pelo texto via JS — sem referência Python
+            # Usa 'label' genérico (sem classe) para resistir a mudanças de styled-components
             target_index = self.driver.execute_script("""
-                var labels = document.querySelectorAll('label.filterOption');
+                var labels = document.querySelectorAll('label');
                 for (var i = 0; i < labels.length; i++) {
                     if (labels[i].textContent.toLowerCase().indexOf('kabum') !== -1) {
                         return i;
@@ -533,7 +542,7 @@ class PriceScraper:
 
             # Scroll via JS para o centro da tela — evita que fique atrás do header
             self.driver.execute_script("""
-                var labels = document.querySelectorAll('label.filterOption');
+                var labels = document.querySelectorAll('label');
                 var label = labels[arguments[0]];
                 if (label) label.scrollIntoView({block: 'center', behavior: 'smooth'});
             """, target_index)
@@ -543,7 +552,7 @@ class PriceScraper:
 
             # Verificar se já está marcado via JS (sem guardar referência)
             already_checked = self.driver.execute_script("""
-                var labels = document.querySelectorAll('label.filterOption');
+                var labels = document.querySelectorAll('label');
                 var label = labels[arguments[0]];
                 if (!label) return null;
                 var input = label.querySelector('input');
@@ -559,7 +568,7 @@ class PriceScraper:
                 return True
 
             # Buscar referência fresca imediatamente antes de clicar
-            labels_fresh = self.driver.find_elements(By.CSS_SELECTOR, "label.filterOption")
+            labels_fresh = self.driver.find_elements(By.CSS_SELECTOR, "label")
             if target_index >= len(labels_fresh):
                 print("[KABUM] Filtro sumiu apos scroll")
                 return False
