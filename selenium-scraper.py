@@ -861,24 +861,51 @@ class PriceScraper:
                                 if (seen[href]) continue;
                                 seen[href] = true;
 
-                                // Subir até o card que tem texto + preço
-                                var card = link.parentElement;
-                                for (var j = 0; j < 8 && card && card !== document.body; j++) {
-                                    var t = (card.innerText || '').trim();
-                                    if (t.length > 30 && t.length < 3000 && /R\\$/.test(t)) break;
-                                    card = card.parentElement;
+                                // Novo layout Kabum: o <a> em si É o card completo (tem preco dentro).
+                                // Layout antigo: o <a> é filho de um card wrapper.
+                                var card;
+                                var linkText = (link.innerText || '').trim();
+                                if (linkText.length > 30 && linkText.length < 3000 && /R\\$/.test(linkText)) {
+                                    card = link;
+                                } else {
+                                    card = link.parentElement;
+                                    for (var j = 0; j < 8 && card && card !== document.body; j++) {
+                                        var t = (card.innerText || '').trim();
+                                        if (t.length > 30 && t.length < 3000 && /R\\$/.test(t)) break;
+                                        card = card.parentElement;
+                                    }
+                                    if (!card || card === document.body) card = link;
                                 }
-                                if (!card || card === document.body) card = link.parentElement;
 
-                                var text = (card.innerText || '').trim();
-                                // Pegar primeira linha com letras (não preço, não vazia)
-                                var lines = text.split('\\n')
-                                    .map(function(l){ return l.trim(); })
-                                    .filter(function(l){ return l.length > 3 && /[a-zA-Z]/.test(l) && !/^R\\$/.test(l); });
-                                var name = lines.length > 0 ? lines[0] : '';
-                                var pm = text.match(/R\\$\\s*[\\d\\.]+,[\\d]{2}/);
+                                // 1. CSS selector direto para o nome (span com line-clamp é o título do produto)
+                                var name = '';
+                                var nameEl = card.querySelector('span[class*="line-clamp"]');
+                                if (nameEl) {
+                                    name = nameEl.textContent.trim();
+                                }
+
+                                // 2. Fallback: parsear linhas do innerText filtrando labels de UI
+                                // l.length >= 10: filtra "SELO:" (5), sr-only "Avaliação " (10 c/ nbsp → 9 c/ trim)
+                                // regex: filtra "Avaliação 5.0 de 5.0" e outros labels conhecidos
+                                if (!name || name.length < 5) {
+                                    var text = (card.innerText || '').trim();
+                                    var lines = text.split('\\n')
+                                        .map(function(l){ return l.trim(); })
+                                        .filter(function(l){
+                                            return l.length >= 10 &&
+                                                   /[a-zA-Z]/.test(l) &&
+                                                   !/^R\\$/.test(l) &&
+                                                   !/^(SELO|Avalia|Estrela|Frete|Parcel|Gr[aá]tis|Comprar|Adicionar|Ver mais|Estoque)/i.test(l);
+                                        });
+                                    name = lines.length > 0 ? lines[0] : '';
+                                }
+
+                                if (!name) continue;
+
+                                var cardText = (card.innerText || '').trim();
+                                var pm = cardText.match(/R\\$\\s*[\\d\\.]+,[\\d]{2}/);
                                 var price = pm ? pm[0] : '';
-                                if (name) results.push({href: href, name: name, price: price});
+                                if (price) results.push({href: href, name: name, price: price});
                             }
                             return results;
                         """) or []
