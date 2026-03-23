@@ -63,7 +63,8 @@ EXCLUSION_KEYWORDS = [
 VARIANT_SUFFIXES = [
     'xt', 'ti', 'super', 'kf', 'f', 'ultra', 'max', 'pro',
     'plus', 'boost', 'overclocked', 'turbo', 'extreme', 'premium',
-    'x3d', '3d', 's', 'g', 'x'  # 'x' adicionado para cobrir 7600X, 5800X, etc.
+    'x3d', '3d', 's', 'g', 'x',  # 'x' adicionado para cobrir 7600X, 5800X, etc.
+    'i',  # 'i' para distinguir HX1200 de HX1200i (versão com monitoramento digital iCUE)
 ]
 
 # Palavras genéricas que podem aparecer sem problema (são apenas marketing/descrição)
@@ -482,6 +483,19 @@ class PriceScraper:
 
         if not search_tokens:
             return search_model.lower() in product_name_lower
+
+        # [FIX Bug#11] Rejeitar acessórios de compatibilidade: produtos onde TODOS os tokens
+        # do modelo buscado aparecem apenas após "para " no título (seção de lista de
+        # compatibilidade), e não antes. Evita casos como:
+        #   "Antena WiFi para MSI MAG Z890 Tomahawk"
+        #   "Módulo TPM 2.0 para Gigabyte H610M H DDR4"
+        #   "Cabo PCIE para Corsair HX1200"
+        if ' para ' in product_name_lower:
+            first_para_idx = product_name_lower.index(' para ')
+            tokens_before_para = self.extract_key_tokens(product_name_lower[:first_para_idx])
+            if not any(t in tokens_before_para for t in search_tokens):
+                print(f"  [MATCH] REJEITADO (tokens só após 'para' - acessório): {product_name[:80]}")
+                return False
 
         product_name_normalized = product_name_lower.replace('-', '').replace('_', '')
 
