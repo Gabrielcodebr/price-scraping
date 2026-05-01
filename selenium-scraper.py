@@ -3,7 +3,9 @@ import time
 import random
 import re
 import requests
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutTimeout
 from supabase import create_client, Client
+from supabase.client import ClientOptions
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
@@ -20,7 +22,11 @@ load_dotenv()
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+supabase: Client = create_client(
+    SUPABASE_URL,
+    SUPABASE_KEY,
+    options=ClientOptions(postgrest_client_timeout=30, storage_client_timeout=30),
+)
 
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 
@@ -134,8 +140,15 @@ class PriceScraper:
             chrome_options.add_argument("--disable-web-security")
             chrome_options.add_argument("--allow-running-insecure-content")
 
-            service = Service(ChromeDriverManager().install())
+            chromedriver_path = os.environ.get("CHROME_DRIVER_PATH", "/usr/local/bin/chromedriver")
+            if os.path.exists(chromedriver_path):
+                service = Service(chromedriver_path)
+            else:
+                service = Service(ChromeDriverManager().install())
             self.driver = webdriver.Chrome(service=service, options=chrome_options)
+
+            self.driver.set_page_load_timeout(45)
+            self.driver.set_script_timeout(30)
 
             self.driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
             self.driver.execute_script("Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]})")
@@ -1539,6 +1552,7 @@ def update_component_prices(component_id, results):
 # ---------------------------------------------------------------------------
 
 MAX_RUNTIME_MINUTES = 300  # Para dentro de 5h, deixando 1h de margem pro timeout de 6h do GitHub Actions
+PER_COMPONENT_TIMEOUT_S = 300  # Watchdog: aborta se um único componente passar de 5min
 
 
 def main():
@@ -1582,7 +1596,17 @@ def main():
 
             print(f"\n[{i}/{len(components)}] | Tempo decorrido: {elapsed:.0f}min | Restante: {remaining:.0f}min")
 
-            results = scraper.scrape_component(component)
+            try:
+                with ThreadPoolExecutor(max_workers=1) as ex:
+                    results = ex.submit(scraper.scrape_component, component).result(
+                        timeout=PER_COMPONENT_TIMEOUT_S
+                    )
+            except FutTimeout:
+                print(f"[WATCHDOG] Componente {component.get('id')} excedeu {PER_COMPONENT_TIMEOUT_S}s — pulando")
+                results = None
+            except Exception as e:
+                print(f"[WATCHDOG] Erro inesperado em scrape_component: {e}")
+                results = None
 
             # Sempre atualiza — com resultados ou resetando
             update_component_prices(component['id'], results)

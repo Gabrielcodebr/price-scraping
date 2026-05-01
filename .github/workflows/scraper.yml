@@ -26,13 +26,23 @@ jobs:
     
     - name: Build e executar
       run: |
+        set -x
         echo "🔨 Building Docker image..."
         docker build -t price-scraper .
         echo "🚀 Executando scraper..."
         echo "⏰ Iniciado em: $(date)"
-        docker run --env-file .env price-scraper
+        docker run --env-file .env price-scraper 2>&1 | tee scraper.log
         echo "✅ Finalizado em: $(date)"
-    
+
+    - name: Upload logs do scraper
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: scraper-log
+        path: scraper.log
+        if-no-files-found: ignore
+        retention-days: 14
+
     - name: Limpar
       if: always()
       run: |
