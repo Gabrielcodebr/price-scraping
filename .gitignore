@@ -2,38 +2,33 @@
 venv/
 .env
 .env*.local
-
 # Cache do Python
 __pycache__/
 *.py[cod]
 *$py.class
-
 # Arquivos temporários e logs
 *.log
 *.pot
 *.pyc
 *.pyo
 *.pyd
-
 # Testes e cobertura
 .coverage
 htmlcov/
 .tox/
 .nox/
 .pytest_cache/
-
 # Configurações de IDE/Editor
 .vscode/
 .idea/
 *.swp
 *.swo
-
 # Banco de dados e arquivos locais
 *.sqlite3
-
 # macOS
 .DS_Store
-
 # Outros
 *.bak
 *.tmp
+# Claude Code (configuração local/pessoal, não deve ser compartilhada)
+.claude/settings.local.json
