@@ -74,6 +74,10 @@ VARIANT_SUFFIXES = [
 ]
 
 # Palavras genéricas que podem aparecer sem problema (são apenas marketing/descrição)
+# [FIX] 'lpx' removido — NÃO é palavra genérica, é o nome de uma linha real de produto
+# (Corsair Vengeance LPX vs Corsair Vengeance normal são pentes diferentes). Com 'lpx'
+# na lista, uma busca por "Vengeance LPX" aceitava qualquer "Vengeance" sem LPX como
+# se fosse o mesmo produto.
 GENERIC_WORDS = [
     'radeon', 'geforce', 'ryzen', 'core', 'intel', 'amd', 'nvidia',
     'processador', 'processor', 'cpu', 'gpu', 'ssd', 'hdd', 'memoria',
@@ -87,8 +91,7 @@ GENERIC_WORDS = [
     'para', 'e', 'and', 'the', 'a', 'an', 'in', 'on', 'at', 'to', 'for',
     'black', 'white', 'rgb', 'argb', 'led', 'custom', 'windforce', 'phantom',
     'strix', 'tuf', 'rog', 'aorus', 'ventus', 'eagle', 'armor', 'twin', 'frozr',
-    'nitro', 'pulse', 'red', 'devil', 'v2', 'v1', 'ex', 'lx', 'lpx',
-    # Palavras descritivas portuguesas comuns que não fazem parte de nomes de modelo
+    'nitro', 'pulse', 'red', 'devil', 'v2', 'v1', 'ex', 'lx',
     'preto', 'preta', 'branco', 'branca', 'sem', 'ate', 'max', 'turbo',
     'cache', 'nucleos', 'nucleo', 'geracao', 'interno', 'interna',
     'chipset', 'socket', 'suporte', 'compativel', 'alta', 'alto',
@@ -100,6 +103,15 @@ GENERIC_WORDS = [
 # (ASUS, MSI, Gigabyte, ZOTAC, etc.), então o nome da marca quase nunca aparece
 # no título do produto. Pular brand check para esses fabricantes.
 CHIP_MANUFACTURERS = {'nvidia', 'amd', 'intel'}
+
+# [FIX] Safelist de capacidades reais de SSD/HD em GB, usada só para aceitar anúncios que
+# escrevem a capacidade sem o "B" final (ex: "SA400S37/480G"). Sem essa safelist, aceitar
+# qualquer número seguido de "G" bagunçaria com sufixos de modelo de CPU/GPU que também
+# terminam em G (ex: Ryzen "5700G", "8700G") e não têm nada a ver com armazenamento.
+KNOWN_STORAGE_CAPACITIES_GB = {
+    120, 128, 240, 250, 256, 480, 500, 512, 960, 1000, 1024,
+    2000, 2048, 4000, 4096, 8000, 8192
+}
 
 
 class PriceScraper:
@@ -163,10 +175,17 @@ class PriceScraper:
 
     def ask_gemini_is_match(self, product_name, component_name, model):
         """
-        Usa Groq (llama-3.3-70b-versatile) como segunda opinião quando is_exact_product_match rejeita.
+        Usa Groq (openai/gpt-oss-120b) como segunda opinião quando is_exact_product_match rejeita.
         Retorna True se o LLM confirma que é o mesmo produto, False caso contrário
         ou em caso de erro.
-        Free tier Groq: 30 RPM, 1.000 RPD — muito mais generoso que Gemini (20 RPD).
+
+        Free tier Groq p/ gpt-oss-120b: 30 RPM, 1.000 RPD, 8.000 TPM, 200.000 TPD.
+        gpt-oss-120b é um modelo de raciocínio: reasoning_effort="low" mantém custo/latência
+        baixos, e reasoning_format="hidden" garante que 'content' venha só com a resposta
+        final (sem isso, o texto de raciocínio viria junto e quebraria o parsing de SIM/NÃO).
+        Por consumir mais tokens por chamada que o modelo antigo (llama-3.3-70b-versatile,
+        descontinuado pelo Groq em 16/08/2026), o TPM (8.000/min) tende a ser o limite mais
+        provável de bater antes do RPM — daí o intervalo de 2.5s abaixo (era 2s).
         """
         if not GROQ_API_KEY:
             return False
@@ -177,11 +196,11 @@ class PriceScraper:
             print(f"[LLM] Cooldown ativo — {remaining}s restantes")
             return False
 
-        # Rate limiter proativo: intervalo mínimo de 2s entre chamadas (~30 RPM)
+        # Rate limiter proativo: intervalo mínimo de 2.5s entre chamadas.
         if self._last_llm_call > 0:
             elapsed = time.time() - self._last_llm_call
-            if elapsed < 2:
-                wait = 2 - elapsed
+            if elapsed < 2.5:
+                wait = 2.5 - elapsed
                 print(f"[LLM] Rate limiter — aguardando {wait:.1f}s")
                 time.sleep(wait)
 
@@ -205,10 +224,12 @@ class PriceScraper:
             "Content-Type": "application/json",
         }
         body = {
-            "model": "llama-3.3-70b-versatile",
+            "model": "openai/gpt-oss-120b",
             "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": 5,
+            "max_completion_tokens": 500,
             "temperature": 0,
+            "reasoning_effort": "low",
+            "reasoning_format": "hidden",
         }
 
         self._last_llm_call = time.time()
@@ -433,6 +454,16 @@ class PriceScraper:
                 return value * 1024
             return value
 
+        # [FIX] Fallback para capacidade escrita sem o "B" final (ex: "SA400S37/480G").
+        # Restrito à safelist KNOWN_STORAGE_CAPACITIES_GB pra não confundir com sufixos
+        # de modelo de CPU/GPU que também terminam em G (ex: Ryzen "5700G") e não têm
+        # nada a ver com armazenamento.
+        fallback_match = re.search(r'(\d+)\s*g\b', text_lower)
+        if fallback_match:
+            value = int(fallback_match.group(1))
+            if value in KNOWN_STORAGE_CAPACITIES_GB:
+                return value
+
         return None
 
     def extract_key_tokens(self, text):
@@ -441,7 +472,11 @@ class PriceScraper:
             return []
 
         text_lower = text.lower()
-        tokens = re.split(r'[\s]+', text_lower)
+        # [FIX] Separar tokens também por hífen, não só por espaço. Sem isso, algo como
+        # "Core Ultra 7-265KF" virava um token só ("7265kf", hífen sem espaço ao redor
+        # grudava o "7" com "265kf"), escondendo o sufixo "F" das checagens de variante
+        # e deixando 265KF passar como se fosse o 265K buscado.
+        tokens = re.split(r'[\s\-]+', text_lower)
 
         key_tokens = []
         for token in tokens:
@@ -547,6 +582,12 @@ class PriceScraper:
                 if prod_num.startswith(search_num) and len(prod_num) > len(search_num):
                     suffix = prod_num[len(search_num):]
                     if suffix in VARIANT_SUFFIXES:
+                        # [FIX] Se o sufixo colado no número já é a variante buscada
+                        # (ex: busca "9070 XT" e o anúncio escreve "9070XT" sem espaço),
+                        # não é produto diferente — é o mesmo, só sem espaço no título.
+                        if suffix in search_variants:
+                            found_match = True
+                            break
                         print(f"  [MATCH] REJEITADO (variante numerica '{prod_num}' != '{search_num}'): {product_name[:80]}")
                         return False
 
