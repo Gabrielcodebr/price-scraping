@@ -18,7 +18,7 @@ htmlcov/
 .tox/
 .nox/
 .pytest_cache/
-# Configurações de IDE/Editor
+# Configurações de IDE
 .vscode/
 .idea/
 *.swp
@@ -30,5 +30,5 @@ htmlcov/
 # Outros
 *.bak
 *.tmp
-# Claude Code (configuração local/pessoal, não deve ser compartilhada)
+# Claude
 .claude/settings.local.json

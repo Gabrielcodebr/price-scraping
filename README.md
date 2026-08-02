@@ -1,4 +1,4 @@
-# 🛒 Price Scraper - Kabum & Amazon
+# Price Scraper - Kabum & Amazon
 
 [![Python](https://img.shields.io/badge/Python-3.9+-blue.svg)](https://www.python.org/downloads/)
 [![Selenium](https://img.shields.io/badge/Selenium-4.35.0-green.svg)](https://www.selenium.dev/)
@@ -7,15 +7,15 @@
 
 > **Scraper automatizado e inteligente** para monitorar preços de componentes de PC nas principais lojas brasileiras (Kabum e Amazon BR).
 
-## 📖 Sobre
+## Sobre
 
-Este scraper foi desenvolvido para automatizar a busca e comparação de preços de componentes de hardware (placas de vídeo, processadores, SSDs, memórias RAM, etc.) nas principais lojas online do Brasil.
+Este scraper foi desenvolvido para automatizar a busca e comparação de preços de componentes de hardware (placas de vídeo, processadores, SSDs, memórias RAM, etc.) em duas das principais lojas online do Brasil.
 
 **Diferenciais:**
 - ✅ **Validação inteligente de produtos** - Evita variantes indesejadas (ex: não confunde RTX 5060 com RTX 5060 Ti)
 - ✅ **Validação de capacidade e geração** - Garante 1TB é 1TB, DDR4 não é DDR5
 - ✅ **Filtro de vendedor** - Aceita apenas produtos vendidos pela própria loja (KaBuM! ou Amazon)
-- ✅ **LLM como fallback** - Usa Groq (Llama-3.3-70b) quando o matching automático falha
+- ✅ **LLM como fallback** - Usa Groq (OpenAI/GPT-OSS-120b) quando o matching automático falha
 - ✅ **Scroll progressivo** - Carrega TODOS os produtos da página para encontrar o melhor preço
 - ✅ **Comportamento humanizado** - Simula digitação e movimentos de mouse para evitar detecção
 - ✅ **Anti-bot protection** - Múltiplos user-agents, delays aleatórios, scripts anti-detecção
@@ -32,7 +32,7 @@ Este scraper foi desenvolvido para automatizar a busca e comparação de preços
 - **Normalização de códigos**: Encontra produtos com hífens (ex: RM-WA-FB-ARGB)
 
 ### 🤖 LLM Fallback (Groq)
-- Quando o matching automático não encontra nenhum produto válido, consulta o **Llama-3.3-70b** via Groq API
+- Quando o matching automático não encontra nenhum produto válido, consulta o **OpenAI/GPT-OSS-120b** via Groq API
 - Avalia os 3 candidatos mais baratos e confirma se são o mesmo produto
 - Rate limiter proativo (2s entre chamadas, cooldown de 60s após erro 429)
 - Fallback desabilitado automaticamente se `GROQ_API_KEY` não estiver configurada
@@ -64,7 +64,7 @@ Este scraper foi desenvolvido para automatizar a busca e comparação de preços
 - **webdriver-manager** - Gerenciamento automático do ChromeDriver
 - **Chrome/ChromeDriver** - Browser headless
 - **Supabase** - Banco de dados (PostgreSQL)
-- **Groq API (Llama-3.3-70b)** - LLM fallback para validação de produtos
+- **Groq API (OpenAI/GPT-OSS-120b)** - LLM fallback para validação de produtos
 - **Docker** - Containerização
 
 ---
@@ -288,7 +288,7 @@ Busca: "Corsair Vengeance DDR4"
 
 ### 4. LLM Fallback (Groq)
 
-Quando o matching automático retorna 0 produtos válidos, o scraper consulta o Llama-3.3-70b:
+Quando o matching automático retorna 0 produtos válidos, o scraper consulta o OpenAI/GPT-OSS-120b:
 
 ```
 [KABUM] Matching normal: 0 resultados. Tentando LLM nos 3 candidatos mais baratos...
