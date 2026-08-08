@@ -1,0 +1,13 @@
+# Uso apenas para desenvolvimento local (hot-reload do código via bind mount).
+# Em produção este projeto roda via GitHub Actions, que builda a imagem
+# a partir do Dockerfile diretamente — ver .github/workflows/scraper.yml
+services:
+  selenium-scraper:
+    build: .
+    container_name: pc-scraper
+    env_file:
+      - .env
+    volumes:
+      - .:/app
+    working_dir: /app
+    restart: on-failure

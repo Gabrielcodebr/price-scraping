@@ -195,7 +195,7 @@ class PriceScraper:
             self.driver = None
             return False
 
-    def ask_gemini_is_match(self, product_name, component_name, model):
+    def ask_groq_is_match(self, product_name, component_name, model):
         """
         Usa Groq (openai/gpt-oss-120b) como segunda opinião quando is_exact_product_match rejeita.
         Retorna True se o LLM confirma que é o mesmo produto, False caso contrário
@@ -1189,7 +1189,7 @@ class PriceScraper:
                 except Exception:
                     continue
 
-            # 2ª passagem: filtrar por matching — sem Gemini
+            # 2ª passagem: filtrar por matching — sem Groq
             valid_products = []
             rejected_candidates = []
 
@@ -1210,19 +1210,19 @@ class PriceScraper:
                     else:
                         rejected_candidates.append(c)
 
-            # Fallback Gemini: só se matching normal falhou completamente
-            # Produtos excluídos por keyword (kit, laptop, etc.) nunca vão ao Gemini
+            # Fallback Groq: só se matching normal falhou completamente
+            # Produtos excluídos por keyword (kit, laptop, etc.) nunca vão ao Groq
             if not valid_products and rejected_candidates and modelo:
-                gemini_candidates = [
+                groq_candidates = [
                     c for c in rejected_candidates
                     if not any(kw in c["name"].lower() for kw in EXCLUSION_KEYWORDS)
                 ]
-                gemini_candidates.sort(key=lambda x: x["price"])
-                if gemini_candidates:
+                groq_candidates.sort(key=lambda x: x["price"])
+                if groq_candidates:
                     meta["llm_used"] = True
-                    print(f"[KABUM] Matching normal: 0 resultados. Tentando LLM nos {min(3, len(gemini_candidates))} candidatos mais baratos...")
-                    for c in gemini_candidates[:3]:
-                        if self.ask_gemini_is_match(c["name"], produto, modelo):
+                    print(f"[KABUM] Matching normal: 0 resultados. Tentando LLM nos {min(3, len(groq_candidates))} candidatos mais baratos...")
+                    for c in groq_candidates[:3]:
+                        if self.ask_groq_is_match(c["name"], produto, modelo):
                             valid_products.append(c)
                             meta["llm_confirmed"] = True
                             break
@@ -1458,7 +1458,7 @@ class PriceScraper:
                 except Exception:
                     continue
 
-            # 2ª passagem: filtrar por matching — sem Gemini
+            # 2ª passagem: filtrar por matching — sem Groq
             valid_products = []
             rejected_candidates = []
 
@@ -1479,19 +1479,19 @@ class PriceScraper:
                     else:
                         rejected_candidates.append(c)
 
-            # Fallback Gemini: só se matching normal falhou completamente
-            # Produtos excluídos por keyword (kit, laptop, etc.) nunca vão ao Gemini
+            # Fallback groq: só se matching normal falhou completamente
+            # Produtos excluídos por keyword (kit, laptop, etc.) nunca vão ao Groq
             if not valid_products and rejected_candidates and modelo:
-                gemini_candidates = [
+                groq_candidates = [
                     c for c in rejected_candidates
                     if not any(kw in c["name"].lower() for kw in EXCLUSION_KEYWORDS)
                 ]
-                gemini_candidates.sort(key=lambda x: x["price"])
-                if gemini_candidates:
+                groq_candidates.sort(key=lambda x: x["price"])
+                if groq_candidates:
                     meta["llm_used"] = True
-                    print(f"[AMAZON] Matching normal: 0 resultados. Tentando LLM nos {min(3, len(gemini_candidates))} candidatos mais baratos...")
-                    for c in gemini_candidates[:3]:
-                        if self.ask_gemini_is_match(c["name"], produto, modelo):
+                    print(f"[AMAZON] Matching normal: 0 resultados. Tentando LLM nos {min(3, len(groq_candidates))} candidatos mais baratos...")
+                    for c in groq_candidates[:3]:
+                        if self.ask_groq_is_match(c["name"], produto, modelo):
                             valid_products.append(c)
                             meta["llm_confirmed"] = True
                             break
