@@ -63,6 +63,13 @@ EXCLUSION_KEYWORDS = [
     'computador intel', 'computador amd', 'computador core', 'computador ryzen',
     'desktop completo', 'desktop montado',
     'desktop intel', 'desktop amd', 'desktop core', 'desktop ryzen',
+    # [FIX/MONITORING 15/08] Variantes com a ordem das palavras invertida em relação às
+    # frases acima (ex: "ORIGIN PC Neuron Gaming PC" em vez de "PC Gamer"). Vistas em
+    # produção deixando passar PCs completos de boutique (Origin PC, iBUYPOWER etc.) que
+    # citam o modelo do componente no título. Cobre só os padrões observados até agora —
+    # não é uma solução geral para ordem de palavras arbitrária, então pode continuar
+    # havendo variações que escapem (ex: "Computador Gaming", "PC para Jogos").
+    'gaming pc', 'gaming desktop', 'gaming computer',
 ]
 
 # Sufixos que indicam PRODUTO DIFERENTE (não podem aparecer se não estão no modelo buscado)
@@ -113,6 +120,14 @@ KNOWN_STORAGE_CAPACITIES_GB = {
     2000, 2048, 4000, 4096, 8000, 8192
 }
 
+# [FIX/MONITORING 15/08] Safelist equivalente para capacidades de VRAM de GPU, usada só
+# quando category == 'GPU'. Motivo de existir separada da safelist de storage acima: títulos
+# de GPU às vezes escrevem a VRAM sem o "B" final (ex: "GeForce RTX 5050 WINDFORCE OC V2 8G"),
+# e os valores típicos de VRAM (4, 6, 8, 10, 12, 16...) não têm nenhuma sobreposição
+# significativa com a safelist de storage — usar a mesma lista simplesmente não teria o "8"
+# nela (list pensada pra SSD/HD) e rejeitava o produto certo por falso negativo de capacidade.
+KNOWN_VRAM_CAPACITIES_GB = {1, 2, 3, 4, 6, 8, 10, 11, 12, 16, 20, 24, 32, 48}
+
 
 # ---------------------------------------------------------------------------
 # MONITORAMENTO / ALERTAS
@@ -143,6 +158,10 @@ class PriceScraper:
         self.driver = None
         self._llm_blocked_until = 0
         self._last_llm_call = 0
+        # [FIX/MONITORING 15/08] Controla se já visitamos a home da Amazon nesta sessão de
+        # driver (ver warm_up_amazon). Mitigação para o padrão observado em produção de
+        # bloqueio ("Algo deu errado") nos primeiros componentes logo após o Chrome subir.
+        self._amazon_warmed_up = False
         self.setup_driver()
 
     def setup_driver(self):
@@ -461,8 +480,16 @@ class PriceScraper:
         match = re.search(r'\bddr(\d)\b', text.lower())
         return f"ddr{match.group(1)}" if match else None
 
-    def extract_storage_capacity(self, text):
-        """Extrai capacidade de armazenamento do texto. Retorna valor normalizado em GB."""
+    def extract_storage_capacity(self, text, extra_known_capacities=None):
+        """
+        Extrai capacidade de armazenamento (ou VRAM, via extra_known_capacities) do texto.
+        Retorna valor normalizado em GB.
+
+        extra_known_capacities: safelist adicional (set) para o fallback sem "B" final,
+        usada por is_exact_product_match para GPUs (KNOWN_VRAM_CAPACITIES_GB), já que a
+        safelist padrão (KNOWN_STORAGE_CAPACITIES_GB) foi pensada para SSD/HD e não cobre
+        capacidades típicas de VRAM.
+        """
         if not text:
             return None
 
@@ -477,13 +504,16 @@ class PriceScraper:
             return value
 
         # [FIX] Fallback para capacidade escrita sem o "B" final (ex: "SA400S37/480G").
-        # Restrito à safelist KNOWN_STORAGE_CAPACITIES_GB pra não confundir com sufixos
-        # de modelo de CPU/GPU que também terminam em G (ex: Ryzen "5700G") e não têm
-        # nada a ver com armazenamento.
+        # Restrito à safelist KNOWN_STORAGE_CAPACITIES_GB (mais extra_known_capacities,
+        # quando fornecida) pra não confundir com sufixos de modelo de CPU/GPU que também
+        # terminam em G (ex: Ryzen "5700G") e não têm nada a ver com armazenamento.
         fallback_match = re.search(r'(\d+)\s*g\b', text_lower)
         if fallback_match:
             value = int(fallback_match.group(1))
-            if value in KNOWN_STORAGE_CAPACITIES_GB:
+            allowed_capacities = KNOWN_STORAGE_CAPACITIES_GB
+            if extra_known_capacities:
+                allowed_capacities = allowed_capacities | extra_known_capacities
+            if value in allowed_capacities:
                 return value
 
         return None
@@ -670,8 +700,17 @@ class PriceScraper:
         if category == 'GPU' and specifications:
             vram_capacity = self.extract_gpu_vram(specifications)
             if vram_capacity is not None:
-                if product_capacity is None or product_capacity != vram_capacity:
-                    print(f"  [MATCH] REJEITADO (VRAM {vram_capacity}GB != {product_capacity}GB): {product_name[:80]}")
+                # [FIX 15/08] Recalcula a capacidade do product_name aceitando também a
+                # safelist de VRAM (KNOWN_VRAM_CAPACITIES_GB) no fallback sem "B" final.
+                # O `product_capacity` calculado acima usa só a safelist de storage, que
+                # não inclui valores típicos de VRAM (4, 6, 8, 10, 12...) — por isso títulos
+                # como "RTX 5050 ... 8G" (sem o B) rejeitavam produtos válidos com
+                # "VRAM 8GB != NoneGB".
+                product_vram_capacity = self.extract_storage_capacity(
+                    product_name, extra_known_capacities=KNOWN_VRAM_CAPACITIES_GB
+                )
+                if product_vram_capacity is None or product_vram_capacity != vram_capacity:
+                    print(f"  [MATCH] REJEITADO (VRAM {vram_capacity}GB != {product_vram_capacity}GB): {product_name[:80]}")
                     return False
 
         # [FIX Bug#10] Checar geração DDR quando o modelo é genérico (ex: "Vengeance", "Fury Beast").
@@ -803,6 +842,41 @@ class PriceScraper:
     # -------------------------------------------------------------------------
     # AMAZON helpers
     # -------------------------------------------------------------------------
+
+    def warm_up_amazon(self):
+        """
+        [FIX/MITIGACAO 15/08] Visita a home da Amazon UMA VEZ por sessão de driver, antes
+        da primeira busca, para estabelecer cookies/sessão básica antes de bater direto
+        numa URL de busca profunda (https://www.amazon.com.br/s?k=...).
+
+        Motivação: em runs reais foi observado que a Amazon retorna a página de erro
+        "Algo deu errado" (título da página) nas primeiras buscas logo após o Chrome
+        subir, normalizando depois de alguns componentes processados — em uma run por
+        ~2-3 componentes, em outra por 10. Isso sugere algum tipo de checagem de
+        reputação/sessão mais rígida no início.
+
+        IMPORTANTE: isso é uma mitigação, não uma correção confirmada. O critério de
+        bloqueio da Amazon é opaco e não foi possível validar contra o site real neste
+        ambiente. Se o padrão persistir mesmo com o aquecimento, o problema é outra
+        coisa (IP/datacenter, fingerprint do Chrome headless, etc.) e precisa de
+        investigação adicional.
+        """
+        if self._amazon_warmed_up:
+            return
+        try:
+            print("[AMAZON] Aquecendo sessao (visita inicial a home)...")
+            self.driver.get("https://www.amazon.com.br")
+            self.wait_for_page_load(timeout=20)
+            self.human_delay(3, 5)
+            self.close_popups()
+            self.progressive_scroll(max_scrolls=2)
+            self.human_delay(1, 2)
+        except Exception as e:
+            print(f"[AMAZON] Falha no aquecimento (nao critico, seguindo): {e}")
+        finally:
+            # Marca como aquecido mesmo se falhar, pra não tentar de novo a cada componente
+            # e perder tempo — é best-effort, uma tentativa por sessão já é o suficiente.
+            self._amazon_warmed_up = True
 
     def check_amazon_shipped_by_amazon(self):
         """
@@ -1275,6 +1349,15 @@ class PriceScraper:
         por segurança (pode ser instabilidade/seletor quebrado, não necessariamente "sem
         estoque"). "not_found" só é usado quando a busca rodou normalmente e o matching
         (incluindo fallback LLM) não confirmou nenhum candidato.
+
+        [FIX 15/08] Antes de qualquer busca, garante que a sessão já foi "aquecida" com
+        uma visita à home (warm_up_amazon, roda só uma vez por driver). Além disso, a
+        página "Algo deu errado" (bloqueio observado em produção, especialmente nos
+        primeiros componentes da run) agora é detectada explicitamente pelo título e
+        tratada com retry com espera maior, em vez de cair direto em "zero candidatos"
+        na primeira tentativa. O error_type fica marcado como "amazon_error_page" nesses
+        casos, separado de "no_candidates"/"captcha", para facilitar diagnóstico futuro
+        nas métricas de run_health.
         """
         produto = component['name']
         marca = component.get('brand')
@@ -1287,6 +1370,8 @@ class PriceScraper:
             print(f"[AMAZON] Modelo para validacao: {modelo}")
 
         meta = {"error_type": None, "llm_used": False, "llm_confirmed": False}
+
+        self.warm_up_amazon()
 
         try:
             search_term = f"{marca} {produto}" if marca and marca.lower() not in produto.lower() else produto
@@ -1301,18 +1386,47 @@ class PriceScraper:
             # DEBUG: verificar URL construída
             print(f"[AMAZON DEBUG] URL: {search_url}")
 
-            self.driver.get(search_url)
+            # [FIX 15/08] Loop de retry específico para a página de erro "Algo deu errado".
+            # Antes, uma única tentativa (com no máximo um refresh se o load falhasse) e,
+            # se a página "carregasse" mas fosse a de erro, o código seguia adiante,
+            # não achava produtos e reportava "no_candidates" — misturando esse padrão de
+            # bloqueio com outras causas de zero-candidatos no mesmo contador.
+            max_load_attempts = 3
+            page_ready = False
 
-            if not self.wait_for_page_load():
-                self.driver.refresh()
+            for attempt in range(1, max_load_attempts + 1):
+                self.driver.get(search_url)
+
                 if not self.wait_for_page_load():
-                    print("ERRO: Amazon nao carregou")
-                    meta["error_type"] = "page_load"
-                    return "error", None, meta
+                    self.driver.refresh()
+                    self.wait_for_page_load()
 
-            self.close_popups()
-            self.human_delay(4, 7)
-            self.wait_for_page_load()
+                self.close_popups()
+                self.human_delay(4, 7)
+                self.wait_for_page_load()
+
+                current_title = self.driver.title
+                current_title_lower = current_title.lower()
+
+                if "algo deu errado" in current_title_lower:
+                    meta["error_type"] = "amazon_error_page"
+                    if attempt < max_load_attempts:
+                        wait_extra = random.uniform(15, 25)
+                        print(f"[AMAZON] Pagina de erro detectada (tentativa {attempt}/{max_load_attempts}) — aguardando {wait_extra:.0f}s e tentando novamente")
+                        time.sleep(wait_extra)
+                        continue
+                    else:
+                        print(f"[AMAZON] Pagina de erro persistente apos {max_load_attempts} tentativas. Titulo: {current_title}")
+                        return "error", None, meta
+
+                page_ready = True
+                break
+
+            if not page_ready:
+                # Segurança: não deveria chegar aqui (o loop sempre retorna ou marca
+                # page_ready), mas se chegar, trata como erro técnico sem mexer no preço.
+                meta["error_type"] = meta["error_type"] or "unknown_load_failure"
+                return "error", None, meta
 
             print("[AMAZON] Fazendo scroll progressivo...")
             self.progressive_scroll(max_scrolls=10)
@@ -1730,14 +1844,21 @@ def record_run_health(stats):
     saudáveis), pra dar histórico contínuo no painel admin; runs saudáveis já nascem
     resolved=True (não poluem a lista de "precisa de atenção"), runs problemáticas ficam
     resolved=False até alguém revisar.
+
+    [FIX 15/08] Adicionado amazon_error_page_pct (páginas "Algo deu errado" da Amazon,
+    tipicamente vistas no início da run) como sinal separado de amazon_error_pct genérico,
+    pra dar visibilidade específica desse padrão de bloqueio no aquecimento do driver.
+    Ele também entra no cálculo de "problematic", no mesmo espírito do captcha_pct.
     """
     total = stats["total_attempted"] or 1
     captcha_pct = (stats["amazon_captcha_count"] / total) * 100
+    amazon_error_page_pct = (stats["amazon_error_page_count"] / total) * 100
     kabum_error_pct = (stats["kabum_error_count"] / total) * 100
     amazon_error_pct = (stats["amazon_error_count"] / total) * 100
 
     problematic = (
         captcha_pct >= RUN_HEALTH_FAILURE_PCT
+        or amazon_error_page_pct >= RUN_HEALTH_FAILURE_PCT
         or kabum_error_pct >= RUN_HEALTH_FAILURE_PCT
         or amazon_error_pct >= RUN_HEALTH_FAILURE_PCT
         or stats["cut_short_by_time_limit"]
@@ -1754,6 +1875,7 @@ def record_run_health(stats):
         "componentes_pendentes_por_tempo": stats["deferred_count"],
         "run_cortada_por_tempo": stats["cut_short_by_time_limit"],
         "amazon_captcha_pct": round(captcha_pct, 1),
+        "amazon_error_page_pct": round(amazon_error_page_pct, 1),
         "kabum_error_pct": round(kabum_error_pct, 1),
         "amazon_error_pct": round(amazon_error_pct, 1),
         "llm_fallback_attempts": stats["llm_fallback_attempts"],
@@ -1960,7 +2082,12 @@ def _build_error_results(error_type):
 
 
 def _accumulate_stats(stats, results):
-    """[MONITORING] Acumula métricas de saúde da run a partir do results de um componente."""
+    """
+    [MONITORING] Acumula métricas de saúde da run a partir do results de um componente.
+
+    [FIX 15/08] Passa a contar separadamente amazon_error_page_count (bloqueio "Algo deu
+    errado"), antes misturado dentro de amazon_error_count genérico.
+    """
     kabum = results.get("kabum") or {}
     amazon = results.get("amazon") or {}
     kabum_meta = kabum.get("meta") or {}
@@ -1972,6 +2099,8 @@ def _accumulate_stats(stats, results):
         stats["amazon_error_count"] += 1
     if amazon_meta.get("error_type") == "captcha":
         stats["amazon_captcha_count"] += 1
+    if amazon_meta.get("error_type") == "amazon_error_page":
+        stats["amazon_error_page_count"] += 1
 
     for meta in (kabum_meta, amazon_meta):
         if meta.get("llm_used"):
@@ -1996,11 +2125,13 @@ def main():
 
     # [MONITORING] Estatisticas da run inteira, usadas pra registrar o alerta run_health
     # no final (captcha, falhas tecnicas, cortes por tempo, taxa de confirmacao do LLM).
+    # [FIX 15/08] amazon_error_page_count adicionado (ver _accumulate_stats/record_run_health).
     stats = {
         "total_attempted": 0,
         "kabum_error_count": 0,
         "amazon_error_count": 0,
         "amazon_captcha_count": 0,
+        "amazon_error_page_count": 0,
         "llm_fallback_attempts": 0,
         "llm_fallback_confirmed": 0,
         "deferred_count": 0,
