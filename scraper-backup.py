@@ -63,6 +63,13 @@ EXCLUSION_KEYWORDS = [
     'computador intel', 'computador amd', 'computador core', 'computador ryzen',
     'desktop completo', 'desktop montado',
     'desktop intel', 'desktop amd', 'desktop core', 'desktop ryzen',
+    # [FIX/MONITORING 15/08] Variantes com a ordem das palavras invertida em relação às
+    # frases acima (ex: "ORIGIN PC Neuron Gaming PC" em vez de "PC Gamer"). Vistas em
+    # produção deixando passar PCs completos de boutique (Origin PC, iBUYPOWER etc.) que
+    # citam o modelo do componente no título. Cobre só os padrões observados até agora —
+    # não é uma solução geral para ordem de palavras arbitrária, então pode continuar
+    # havendo variações que escapem (ex: "Computador Gaming", "PC para Jogos").
+    'gaming pc', 'gaming desktop', 'gaming computer',
 ]
 
 # Sufixos que indicam PRODUTO DIFERENTE (não podem aparecer se não estão no modelo buscado)
@@ -113,6 +120,35 @@ KNOWN_STORAGE_CAPACITIES_GB = {
     2000, 2048, 4000, 4096, 8000, 8192
 }
 
+# [FIX/MONITORING 15/08] Safelist equivalente para capacidades de VRAM de GPU, usada só
+# quando category == 'GPU'. Motivo de existir separada da safelist de storage acima: títulos
+# de GPU às vezes escrevem a VRAM sem o "B" final (ex: "GeForce RTX 5050 WINDFORCE OC V2 8G"),
+# e os valores típicos de VRAM (4, 6, 8, 10, 12, 16...) não têm nenhuma sobreposição
+# significativa com a safelist de storage — usar a mesma lista simplesmente não teria o "8"
+# nela (list pensada pra SSD/HD) e rejeitava o produto certo por falso negativo de capacidade.
+KNOWN_VRAM_CAPACITIES_GB = {1, 2, 3, 4, 6, 8, 10, 11, 12, 16, 20, 24, 32, 48}
+
+
+# ---------------------------------------------------------------------------
+# MONITORAMENTO / ALERTAS
+# ---------------------------------------------------------------------------
+# [MONITORING] Thresholds definidos junto com o usuário: 80% de variação de preço é um
+# chute consciente ("raro um produto ficar tão mais caro/barato do uma run pra outra,
+# mesmo em Black Friday") — serve como sinalizador para revisão manual, não como
+# verdade absoluta.
+PRICE_CHANGE_ALERT_PCT = 80          # variação % (preço novo vs preço salvo) no mesmo site
+STORE_MISMATCH_ALERT_PCT = 80        # diferença % entre Kabum e Amazon na MESMA run
+NOT_FOUND_STREAK_THRESHOLD = 4       # misses consecutivos em um site -> alerta "sumindo"
+DISCONTINUED_STREAK_THRESHOLD = 8    # misses consecutivos nos DOIS sites -> possível descontinuado
+RUN_HEALTH_FAILURE_PCT = 30          # % de erros técnicos (captcha/filtro) na run -> alerta de saúde
+ALERT_DEFAULT_EXPIRY_DAYS = 14       # expiração padrão de alertas pontuais (preço/mismatch/streak)
+RUN_HEALTH_EXPIRY_DAYS = 30          # run_health é registro histórico, expira mais devagar
+
+ALLOWED_ALERT_TYPES = {
+    "price_spike", "price_drop", "store_mismatch",
+    "not_found_streak", "possible_discontinued", "run_health",
+}
+
 
 class PriceScraper:
     """Web scraper para buscar preços em Kabum e Amazon com comportamento humanizado"""
@@ -121,6 +157,10 @@ class PriceScraper:
         self.driver = None
         self._llm_blocked_until = 0
         self._last_llm_call = 0
+        # [FIX/MONITORING 15/08] Controla se já visitamos a home da Amazon nesta sessão de
+        # driver (ver warm_up_amazon). Mitigação para o padrão observado em produção de
+        # bloqueio ("Algo deu errado") nos primeiros componentes logo após o Chrome subir.
+        self._amazon_warmed_up = False
         self.setup_driver()
 
     def setup_driver(self):
@@ -173,7 +213,7 @@ class PriceScraper:
             self.driver = None
             return False
 
-    def ask_gemini_is_match(self, product_name, component_name, model):
+    def ask_groq_is_match(self, product_name, component_name, model):
         """
         Usa Groq (openai/gpt-oss-120b) como segunda opinião quando is_exact_product_match rejeita.
         Retorna True se o LLM confirma que é o mesmo produto, False caso contrário
@@ -439,8 +479,16 @@ class PriceScraper:
         match = re.search(r'\bddr(\d)\b', text.lower())
         return f"ddr{match.group(1)}" if match else None
 
-    def extract_storage_capacity(self, text):
-        """Extrai capacidade de armazenamento do texto. Retorna valor normalizado em GB."""
+    def extract_storage_capacity(self, text, extra_known_capacities=None):
+        """
+        Extrai capacidade de armazenamento (ou VRAM, via extra_known_capacities) do texto.
+        Retorna valor normalizado em GB.
+
+        extra_known_capacities: safelist adicional (set) para o fallback sem "B" final,
+        usada por is_exact_product_match para GPUs (KNOWN_VRAM_CAPACITIES_GB), já que a
+        safelist padrão (KNOWN_STORAGE_CAPACITIES_GB) foi pensada para SSD/HD e não cobre
+        capacidades típicas de VRAM.
+        """
         if not text:
             return None
 
@@ -455,16 +503,34 @@ class PriceScraper:
             return value
 
         # [FIX] Fallback para capacidade escrita sem o "B" final (ex: "SA400S37/480G").
-        # Restrito à safelist KNOWN_STORAGE_CAPACITIES_GB pra não confundir com sufixos
-        # de modelo de CPU/GPU que também terminam em G (ex: Ryzen "5700G") e não têm
-        # nada a ver com armazenamento.
+        # Restrito à safelist KNOWN_STORAGE_CAPACITIES_GB (mais extra_known_capacities,
+        # quando fornecida) pra não confundir com sufixos de modelo de CPU/GPU que também
+        # terminam em G (ex: Ryzen "5700G") e não têm nada a ver com armazenamento.
         fallback_match = re.search(r'(\d+)\s*g\b', text_lower)
         if fallback_match:
             value = int(fallback_match.group(1))
-            if value in KNOWN_STORAGE_CAPACITIES_GB:
+            allowed_capacities = KNOWN_STORAGE_CAPACITIES_GB
+            if extra_known_capacities:
+                allowed_capacities = allowed_capacities | extra_known_capacities
+            if value in allowed_capacities:
                 return value
 
         return None
+
+    def extract_gpu_vram(self, specifications):
+        """
+        [MONITORING/FIX] Extrai a VRAM de referência (em GB) do campo specifications.memory
+        de um componente GPU (ex: "16GB GDDR6" -> 16). Usado só para categoria GPU, pois
+        o model/name de uma GPU normalmente NÃO diz a capacidade (ex: "GeForce RTX 3060"
+        não diz se é a versão 8GB ou 12GB — são produtos diferentes). Sem isso, o matching
+        aceitava qualquer capacidade de VRAM como se fosse o mesmo produto.
+        """
+        if not specifications:
+            return None
+        memory_str = specifications.get('memory')
+        if not memory_str:
+            return None
+        return self.extract_storage_capacity(memory_str)
 
     def extract_key_tokens(self, text):
         """Extrai tokens-chave de um texto (números e códigos alfanuméricos importantes)."""
@@ -504,7 +570,8 @@ class PriceScraper:
 
         return key_tokens
 
-    def is_exact_product_match(self, product_name, search_model, search_brand=None, search_name=None):
+    def is_exact_product_match(self, product_name, search_model, search_brand=None,
+                                search_name=None, category=None, specifications=None):
         """
         Valida se o produto encontrado corresponde exatamente ao modelo buscado.
 
@@ -515,6 +582,10 @@ class PriceScraper:
             search_name: Nome completo do componente (campo 'name'), usado como
                          fallback para extrair capacidade de armazenamento quando
                          o model não contém essa informação (Bug#3).
+            category: Categoria do componente (campo 'category'). Usado para ativar a
+                      checagem de VRAM em GPUs.
+            specifications: Dict de especificações do componente (campo 'specifications').
+                             Usado para extrair a VRAM de referência em GPUs.
         """
         if not product_name or not search_model:
             return False
@@ -620,6 +691,27 @@ class PriceScraper:
                 print(f"  [MATCH] REJEITADO (capacidade {search_capacity}GB != {product_capacity}GB): {product_name[:80]}")
                 return False
 
+        # [MONITORING/FIX] Checagem de VRAM para GPUs: model/name normalmente não trazem a
+        # capacidade (ex: "GeForce RTX 3060" não diz se é a versão 8GB ou 12GB), então a
+        # capacidade de referência vem do campo specifications.memory cadastrado no
+        # componente. Sem isso, uma RTX 3060 12GB e uma RTX 3060 8GB (produtos diferentes,
+        # preços bem diferentes) eram tratadas como o mesmo match.
+        if category == 'GPU' and specifications:
+            vram_capacity = self.extract_gpu_vram(specifications)
+            if vram_capacity is not None:
+                # [FIX 15/08] Recalcula a capacidade do product_name aceitando também a
+                # safelist de VRAM (KNOWN_VRAM_CAPACITIES_GB) no fallback sem "B" final.
+                # O `product_capacity` calculado acima usa só a safelist de storage, que
+                # não inclui valores típicos de VRAM (4, 6, 8, 10, 12...) — por isso títulos
+                # como "RTX 5050 ... 8G" (sem o B) rejeitavam produtos válidos com
+                # "VRAM 8GB != NoneGB".
+                product_vram_capacity = self.extract_storage_capacity(
+                    product_name, extra_known_capacities=KNOWN_VRAM_CAPACITIES_GB
+                )
+                if product_vram_capacity is None or product_vram_capacity != vram_capacity:
+                    print(f"  [MATCH] REJEITADO (VRAM {vram_capacity}GB != {product_vram_capacity}GB): {product_name[:80]}")
+                    return False
+
         # [FIX Bug#10] Checar geração DDR quando o modelo é genérico (ex: "Vengeance", "Fury Beast").
         # Sem isso, DDR4 e DDR5 do mesmo produto ficam intercambiáveis no matching.
         # Só rejeita quando AMBOS têm DDR explícito e são diferentes.
@@ -649,7 +741,16 @@ class PriceScraper:
     def click_kabum_filter(self):
         """
         Tenta clicar no checkbox 'KaBuM!' no filtro 'Vendido por'.
-        Retorna True se encontrou e clicou, False se não encontrou.
+
+        [MONITORING/FIX] Retorna um de três estados em vez de um bool, para distinguir
+        "não tem estoque próprio nessa busca" (miss legítimo de negócio) de "falha
+        técnica ao tentar aplicar o filtro" (erro transitório que não deve contar como
+        miss nem resetar preço). A lógica de clique/scroll/timing em si NÃO foi alterada.
+
+        Retorna:
+            "applied"   -> filtro encontrado e aplicado (ou já estava aplicado)
+            "not_found" -> checkbox 'KaBuM!' não existe nessa busca (sem estoque próprio)
+            "error"     -> falha técnica ao tentar aplicar o filtro
         - JS usado apenas para scroll (evita ElementClickIntercepted por elemento coberto)
         - ActionChains para o clique real (preserva comportamento humanizado)
         - Índice usado em vez de referência Python (evita StaleElementReference)
@@ -669,7 +770,7 @@ class PriceScraper:
 
             if target_index == -1:
                 print("[KABUM] Filtro 'KaBuM!' nao encontrado - sem estoque proprio nessa busca")
-                return False
+                return "not_found"
 
             # Scroll via JS para o centro da tela — evita que fique atrás do header
             self.driver.execute_script("""
@@ -692,17 +793,17 @@ class PriceScraper:
 
             if already_checked is None:
                 print("[KABUM] Filtro sumiu apos scroll")
-                return False
+                return "error"
 
             if already_checked:
                 print("[KABUM] Filtro 'KaBuM!' ja estava selecionado")
-                return True
+                return "applied"
 
             # Buscar referência fresca imediatamente antes de clicar
             labels_fresh = self.driver.find_elements(By.CSS_SELECTOR, "label")
             if target_index >= len(labels_fresh):
                 print("[KABUM] Filtro sumiu apos scroll")
-                return False
+                return "error"
 
             checkbox = labels_fresh[target_index].find_element(By.CSS_SELECTOR, "input")
 
@@ -714,11 +815,11 @@ class PriceScraper:
             actions.perform()
 
             print("[KABUM] Filtro 'KaBuM!' aplicado")
-            return True
+            return "applied"
 
         except Exception as e:
             print(f"[KABUM] Falha ao aplicar filtro: {e}")
-            return False
+            return "error"
 
     def get_kabum_product_url(self, container):
         """Extrai a URL direta do produto Kabum a partir do card."""
@@ -740,6 +841,41 @@ class PriceScraper:
     # -------------------------------------------------------------------------
     # AMAZON helpers
     # -------------------------------------------------------------------------
+
+    def warm_up_amazon(self):
+        """
+        [FIX/MITIGACAO 15/08] Visita a home da Amazon UMA VEZ por sessão de driver, antes
+        da primeira busca, para estabelecer cookies/sessão básica antes de bater direto
+        numa URL de busca profunda (https://www.amazon.com.br/s?k=...).
+
+        Motivação: em runs reais foi observado que a Amazon retorna a página de erro
+        "Algo deu errado" (título da página) nas primeiras buscas logo após o Chrome
+        subir, normalizando depois de alguns componentes processados — em uma run por
+        ~2-3 componentes, em outra por 10. Isso sugere algum tipo de checagem de
+        reputação/sessão mais rígida no início.
+
+        IMPORTANTE: isso é uma mitigação, não uma correção confirmada. O critério de
+        bloqueio da Amazon é opaco e não foi possível validar contra o site real neste
+        ambiente. Se o padrão persistir mesmo com o aquecimento, o problema é outra
+        coisa (IP/datacenter, fingerprint do Chrome headless, etc.) e precisa de
+        investigação adicional.
+        """
+        if self._amazon_warmed_up:
+            return
+        try:
+            print("[AMAZON] Aquecendo sessao (visita inicial a home)...")
+            self.driver.get("https://www.amazon.com.br")
+            self.wait_for_page_load(timeout=20)
+            self.human_delay(3, 5)
+            self.close_popups()
+            self.progressive_scroll(max_scrolls=2)
+            self.human_delay(1, 2)
+        except Exception as e:
+            print(f"[AMAZON] Falha no aquecimento (nao critico, seguindo): {e}")
+        finally:
+            # Marca como aquecido mesmo se falhar, pra não tentar de novo a cada componente
+            # e perder tempo — é best-effort, uma tentativa por sessão já é o suficiente.
+            self._amazon_warmed_up = True
 
     def check_amazon_shipped_by_amazon(self):
         """
@@ -814,14 +950,30 @@ class PriceScraper:
         Busca produto na Kabum.
         Aplica filtro 'KaBuM!' (só aceita itens vendidos pela própria Kabum).
         Retorna o mais barato com URL direta do produto.
+
+        [MONITORING/FIX] Retorna uma tupla (status, result, meta) em vez de só o result.
+        status ∈ {"found", "not_found", "error"}:
+          - "found"     -> result contém os dados do produto (como antes).
+          - "not_found" -> a busca rodou normalmente mas não passou nenhum candidato no
+                           matching (ou não há estoque próprio da Kabum pra esse item).
+                           É um miss "de negócio", conta para o streak de not-found.
+          - "error"     -> falha técnica (página não carregou, exceção, timeout de
+                           carregamento). NÃO conta como miss e NÃO deve resetar o
+                           preço salvo — só reflete que essa tentativa específica falhou.
+        meta é um dict com detalhes técnicos (error_type, uso do fallback LLM) usados
+        só para as métricas de saúde da run, sem afetar a lógica de matching em si.
         """
         produto = component['name']
         marca = component.get('brand')
         modelo = component.get('model')
+        categoria = component.get('category')
+        especificacoes = component.get('specifications')
 
         print(f"\n[KABUM] Buscando: {produto}")
         if modelo:
             print(f"[KABUM] Modelo para validacao: {modelo}")
+
+        meta = {"error_type": None, "llm_used": False, "llm_confirmed": False}
 
         try:
             search_term = f"{marca} {produto}" if marca and marca.lower() not in produto.lower() else produto
@@ -839,7 +991,8 @@ class PriceScraper:
                 self.driver.refresh()
                 if not self.wait_for_page_load():
                     print("ERRO: Kabum nao carregou")
-                    return None
+                    meta["error_type"] = "page_load"
+                    return "error", None, meta
 
             # DEBUG: verificar URL final
             print(f"[KABUM DEBUG] URL apos busca: {self.driver.current_url}")
@@ -851,9 +1004,13 @@ class PriceScraper:
             self.progressive_scroll(max_scrolls=3)
 
             # Aplicar filtro KaBuM! — sem filtro, não aceitamos nenhum item
-            filter_applied = self.click_kabum_filter()
-            if not filter_applied:
-                return None
+            filter_status = self.click_kabum_filter()
+            if filter_status == "error":
+                meta["error_type"] = "filter_error"
+                return "error", None, meta
+            if filter_status == "not_found":
+                # Sem estoque próprio da Kabum pra essa busca — miss legítimo, não erro.
+                return "not_found", None, meta
 
             # Aguardar recarregamento após filtro
             self.human_delay(3, 5)
@@ -878,7 +1035,7 @@ class PriceScraper:
                 )
                 if no_results and any(el.is_displayed() for el in no_results):
                     print("[KABUM] Nenhum produto KaBuM! apos filtro")
-                    return None
+                    return "not_found", None, meta
             except:
                 pass
 
@@ -986,7 +1143,11 @@ class PriceScraper:
                 page_title = self.driver.title
                 print(f"[KABUM] Titulo da pagina: {page_title}")
                 print("ERRO: Nenhum produto encontrado na Kabum")
-                return None
+                # Nenhum candidato bruto foi listado — provável instabilidade de página/
+                # seletor quebrado, não um "sem estoque" confirmado. Tratado como erro
+                # técnico pra não resetar o preço salvo à toa.
+                meta["error_type"] = "no_candidates"
+                return "error", None, meta
 
             total = len(product_containers) if product_containers else len(kabum_js_data)
             print(f"[KABUM] Total de produtos na pagina: {total}")
@@ -1101,14 +1262,15 @@ class PriceScraper:
                 except Exception:
                     continue
 
-            # 2ª passagem: filtrar por matching — sem Gemini
+            # 2ª passagem: filtrar por matching — sem Groq
             valid_products = []
             rejected_candidates = []
 
             for c in all_candidates:
                 product_name = c["name"]
                 if modelo:
-                    if self.is_exact_product_match(product_name, modelo, marca, search_name=produto):
+                    if self.is_exact_product_match(product_name, modelo, marca, search_name=produto,
+                                                    category=categoria, specifications=especificacoes):
                         valid_products.append(c)
                     else:
                         rejected_candidates.append(c)
@@ -1121,26 +1283,28 @@ class PriceScraper:
                     else:
                         rejected_candidates.append(c)
 
-            # Fallback Gemini: só se matching normal falhou completamente
-            # Produtos excluídos por keyword (kit, laptop, etc.) nunca vão ao Gemini
+            # Fallback Groq: só se matching normal falhou completamente
+            # Produtos excluídos por keyword (kit, laptop, etc.) nunca vão ao Groq
             if not valid_products and rejected_candidates and modelo:
-                gemini_candidates = [
+                groq_candidates = [
                     c for c in rejected_candidates
                     if not any(kw in c["name"].lower() for kw in EXCLUSION_KEYWORDS)
                 ]
-                gemini_candidates.sort(key=lambda x: x["price"])
-                if gemini_candidates:
-                    print(f"[KABUM] Matching normal: 0 resultados. Tentando LLM nos {min(3, len(gemini_candidates))} candidatos mais baratos...")
-                    for c in gemini_candidates[:3]:
-                        if self.ask_gemini_is_match(c["name"], produto, modelo):
+                groq_candidates.sort(key=lambda x: x["price"])
+                if groq_candidates:
+                    meta["llm_used"] = True
+                    print(f"[KABUM] Matching normal: 0 resultados. Tentando LLM nos {min(3, len(groq_candidates))} candidatos mais baratos...")
+                    for c in groq_candidates[:3]:
+                        if self.ask_groq_is_match(c["name"], produto, modelo):
                             valid_products.append(c)
+                            meta["llm_confirmed"] = True
                             break
 
             print(f"[KABUM] Produtos validos: {len(valid_products)} | Rejeitados: {len(rejected_candidates)}")
 
             if not valid_products:
                 print("[KABUM] Produto nao encontrado")
-                return None
+                return "not_found", None, meta
 
             valid_products.sort(key=lambda x: x["price"])
             cheapest = valid_products[0]
@@ -1165,24 +1329,48 @@ class PriceScraper:
             print(f"[KABUM] SELECIONADO: {cheapest['name']} - R$ {cheapest['price']:.2f}")
             print(f"[KABUM] URL: {direct_url}")
 
-            return result
+            return "found", result, meta
 
         except Exception as e:
             print(f"ERRO CRITICO: Kabum - {e}")
-            return None
+            meta["error_type"] = "exception"
+            return "error", None, meta
 
     def search_amazon(self, component):
         """
         Busca produto na Amazon.
         Entra na página do mais barato para pegar URL direta e verificar vendedor.
+
+        [MONITORING/FIX] Mesma mudança de contrato de retorno que search_kabum:
+        retorna (status, result, meta) com status ∈ {"found", "not_found", "error"}.
+        CAPTCHA e falha de carregamento são tratados como "error" (não conta como miss,
+        não reseta preço). Zero candidatos brutos na página também é tratado como "error"
+        por segurança (pode ser instabilidade/seletor quebrado, não necessariamente "sem
+        estoque"). "not_found" só é usado quando a busca rodou normalmente e o matching
+        (incluindo fallback LLM) não confirmou nenhum candidato.
+
+        [FIX 15/08] Antes de qualquer busca, garante que a sessão já foi "aquecida" com
+        uma visita à home (warm_up_amazon, roda só uma vez por driver). Além disso, a
+        página "Algo deu errado" (bloqueio observado em produção, especialmente nos
+        primeiros componentes da run) agora é detectada explicitamente pelo título e
+        tratada com retry com espera maior, em vez de cair direto em "zero candidatos"
+        na primeira tentativa. O error_type fica marcado como "amazon_error_page" nesses
+        casos, separado de "no_candidates"/"captcha", para facilitar diagnóstico futuro
+        nas métricas de run_health.
         """
         produto = component['name']
         marca = component.get('brand')
         modelo = component.get('model')
+        categoria = component.get('category')
+        especificacoes = component.get('specifications')
 
         print(f"\n[AMAZON] Buscando: {produto}")
         if modelo:
             print(f"[AMAZON] Modelo para validacao: {modelo}")
+
+        meta = {"error_type": None, "llm_used": False, "llm_confirmed": False}
+
+        self.warm_up_amazon()
 
         try:
             search_term = f"{marca} {produto}" if marca and marca.lower() not in produto.lower() else produto
@@ -1197,17 +1385,47 @@ class PriceScraper:
             # DEBUG: verificar URL construída
             print(f"[AMAZON DEBUG] URL: {search_url}")
 
-            self.driver.get(search_url)
+            # [FIX 15/08] Loop de retry específico para a página de erro "Algo deu errado".
+            # Antes, uma única tentativa (com no máximo um refresh se o load falhasse) e,
+            # se a página "carregasse" mas fosse a de erro, o código seguia adiante,
+            # não achava produtos e reportava "no_candidates" — misturando esse padrão de
+            # bloqueio com outras causas de zero-candidatos no mesmo contador.
+            max_load_attempts = 3
+            page_ready = False
 
-            if not self.wait_for_page_load():
-                self.driver.refresh()
+            for attempt in range(1, max_load_attempts + 1):
+                self.driver.get(search_url)
+
                 if not self.wait_for_page_load():
-                    print("ERRO: Amazon nao carregou")
-                    return None
+                    self.driver.refresh()
+                    self.wait_for_page_load()
 
-            self.close_popups()
-            self.human_delay(4, 7)
-            self.wait_for_page_load()
+                self.close_popups()
+                self.human_delay(4, 7)
+                self.wait_for_page_load()
+
+                current_title = self.driver.title
+                current_title_lower = current_title.lower()
+
+                if "algo deu errado" in current_title_lower:
+                    meta["error_type"] = "amazon_error_page"
+                    if attempt < max_load_attempts:
+                        wait_extra = random.uniform(15, 25)
+                        print(f"[AMAZON] Pagina de erro detectada (tentativa {attempt}/{max_load_attempts}) — aguardando {wait_extra:.0f}s e tentando novamente")
+                        time.sleep(wait_extra)
+                        continue
+                    else:
+                        print(f"[AMAZON] Pagina de erro persistente apos {max_load_attempts} tentativas. Titulo: {current_title}")
+                        return "error", None, meta
+
+                page_ready = True
+                break
+
+            if not page_ready:
+                # Segurança: não deveria chegar aqui (o loop sempre retorna ou marca
+                # page_ready), mas se chegar, trata como erro técnico sem mexer no preço.
+                meta["error_type"] = meta["error_type"] or "unknown_load_failure"
+                return "error", None, meta
 
             print("[AMAZON] Fazendo scroll progressivo...")
             self.progressive_scroll(max_scrolls=10)
@@ -1216,7 +1434,8 @@ class PriceScraper:
             page_title = self.driver.title.lower()
             if "robot" in page_title or "captcha" in page_title or "verification" in page_title:
                 print(f"[AMAZON] CAPTCHA detectado! Titulo: {self.driver.title}")
-                return None
+                meta["error_type"] = "captcha"
+                return "error", None, meta
             print(f"[AMAZON] Titulo da pagina: {self.driver.title}")
 
             product_selectors = [
@@ -1244,7 +1463,11 @@ class PriceScraper:
             if not product_elements:
                 print(f"[AMAZON] Titulo da pagina: {self.driver.title}")
                 print("ERRO: Nenhum produto encontrado na Amazon")
-                return None
+                # Nenhum candidato bruto foi listado — provável instabilidade de página/
+                # seletor quebrado, não um "sem estoque" confirmado. Tratado como erro
+                # técnico pra não resetar o preço salvo à toa.
+                meta["error_type"] = "no_candidates"
+                return "error", None, meta
 
             print(f"[AMAZON] Total de produtos na pagina: {len(product_elements)}")
 
@@ -1348,14 +1571,15 @@ class PriceScraper:
                 except Exception:
                     continue
 
-            # 2ª passagem: filtrar por matching — sem Gemini
+            # 2ª passagem: filtrar por matching — sem Groq
             valid_products = []
             rejected_candidates = []
 
             for c in all_candidates:
                 product_name = c["name"]
                 if modelo:
-                    if self.is_exact_product_match(product_name, modelo, marca, search_name=produto):
+                    if self.is_exact_product_match(product_name, modelo, marca, search_name=produto,
+                                                    category=categoria, specifications=especificacoes):
                         valid_products.append(c)
                     else:
                         rejected_candidates.append(c)
@@ -1368,26 +1592,28 @@ class PriceScraper:
                     else:
                         rejected_candidates.append(c)
 
-            # Fallback Gemini: só se matching normal falhou completamente
-            # Produtos excluídos por keyword (kit, laptop, etc.) nunca vão ao Gemini
+            # Fallback groq: só se matching normal falhou completamente
+            # Produtos excluídos por keyword (kit, laptop, etc.) nunca vão ao Groq
             if not valid_products and rejected_candidates and modelo:
-                gemini_candidates = [
+                groq_candidates = [
                     c for c in rejected_candidates
                     if not any(kw in c["name"].lower() for kw in EXCLUSION_KEYWORDS)
                 ]
-                gemini_candidates.sort(key=lambda x: x["price"])
-                if gemini_candidates:
-                    print(f"[AMAZON] Matching normal: 0 resultados. Tentando LLM nos {min(3, len(gemini_candidates))} candidatos mais baratos...")
-                    for c in gemini_candidates[:3]:
-                        if self.ask_gemini_is_match(c["name"], produto, modelo):
+                groq_candidates.sort(key=lambda x: x["price"])
+                if groq_candidates:
+                    meta["llm_used"] = True
+                    print(f"[AMAZON] Matching normal: 0 resultados. Tentando LLM nos {min(3, len(groq_candidates))} candidatos mais baratos...")
+                    for c in groq_candidates[:3]:
+                        if self.ask_groq_is_match(c["name"], produto, modelo):
                             valid_products.append(c)
+                            meta["llm_confirmed"] = True
                             break
 
             print(f"[AMAZON] Produtos validos: {len(valid_products)} | Rejeitados: {len(rejected_candidates)}")
 
             if not valid_products:
                 print("[AMAZON] Produto nao encontrado")
-                return None
+                return "not_found", None, meta
 
             valid_products.sort(key=lambda x: x["price"])
             cheapest = valid_products[0]
@@ -1435,14 +1661,21 @@ class PriceScraper:
             print(f"[AMAZON] SELECIONADO: {cheapest['name']} - R$ {cheapest['price']:.2f}")
             print(f"[AMAZON] URL: {direct_url}")
 
-            return result
+            return "found", result, meta
 
         except Exception as e:
             print(f"ERRO CRITICO: Amazon - {e}")
-            return None
+            meta["error_type"] = "exception"
+            return "error", None, meta
 
     def scrape_component(self, component):
-        """Busca preços de um componente em ambos os sites"""
+        """
+        Busca preços de um componente em ambos os sites.
+
+        [MONITORING/FIX] Retorna um dict com o status/dados/meta de cada site, sempre
+        presentes (nunca um dict vazio ou None), para que update_component_prices possa
+        decidir com precisão o que fazer em cada caso (found/not_found/error).
+        """
         component_id = component['id']
         component_name = component['name']
 
@@ -1450,43 +1683,46 @@ class PriceScraper:
         print(f"Processando: {component_name} (ID: {component_id})")
         print(f"{'=' * 60}")
 
-        results = {}
-
-        kabum_result = self.search_kabum(component)
-        if kabum_result:
-            results['kabum'] = kabum_result
+        kabum_status, kabum_data, kabum_meta = self.search_kabum(component)
 
         self.human_delay(5, 8)
 
-        amazon_result = self.search_amazon(component)
-        if amazon_result:
-            results['amazon'] = amazon_result
+        amazon_status, amazon_data, amazon_meta = self.search_amazon(component)
+
+        results = {
+            "kabum": {"status": kabum_status, "data": kabum_data, "meta": kabum_meta},
+            "amazon": {"status": amazon_status, "data": amazon_data, "meta": amazon_meta},
+        }
 
         print(f"\n--- Resumo: {component_name} ---")
 
-        if 'kabum' in results:
-            print(f"Kabum: R$ {results['kabum']['preco']:.2f}")
-        else:
+        if kabum_status == "found":
+            print(f"Kabum: R$ {kabum_data['preco']:.2f}")
+        elif kabum_status == "not_found":
             print("Kabum: Nao encontrado")
-
-        if 'amazon' in results:
-            shipped = results['amazon'].get('shipped_by_store')
-            shipped_label = {True: "(Amazon)", False: "(Externo)", None: "(indefinido)"}.get(shipped, "")
-            print(f"Amazon: R$ {results['amazon']['preco']:.2f} {shipped_label}")
         else:
+            print(f"Kabum: Erro tecnico ({kabum_meta.get('error_type')}) — preco anterior mantido")
+
+        if amazon_status == "found":
+            shipped = amazon_data.get('shipped_by_store')
+            shipped_label = {True: "(Amazon)", False: "(Externo)", None: "(indefinido)"}.get(shipped, "")
+            print(f"Amazon: R$ {amazon_data['preco']:.2f} {shipped_label}")
+        elif amazon_status == "not_found":
             print("Amazon: Nao encontrado")
+        else:
+            print(f"Amazon: Erro tecnico ({amazon_meta.get('error_type')}) — preco anterior mantido")
 
         valid_prices = []
-        if 'kabum' in results:
-            valid_prices.append(('kabum', results['kabum']['preco']))
-        if 'amazon' in results:
-            valid_prices.append(('amazon', results['amazon']['preco']))
+        if kabum_status == "found":
+            valid_prices.append(('kabum', kabum_data['preco']))
+        if amazon_status == "found":
+            valid_prices.append(('amazon', amazon_data['preco']))
 
         if valid_prices:
             best_site, best_price = min(valid_prices, key=lambda x: x[1])
-            print(f"Melhor preco: {best_site.upper()} - R$ {best_price:.2f}")
+            print(f"Melhor preco (nesta run): {best_site.upper()} - R$ {best_price:.2f}")
         else:
-            print("Nenhum preco valido encontrado")
+            print("Nenhum preco encontrado nesta run")
 
         print(f"{'=' * 60}\n")
 
@@ -1502,79 +1738,313 @@ class PriceScraper:
 
 
 # ---------------------------------------------------------------------------
+# ALERTAS (scraper_alerts)
+# ---------------------------------------------------------------------------
+# [MONITORING] Helpers isolados do restante do scraping — só lidam com criar/atualizar/
+# resolver linhas em scraper_alerts. Nunca deletam nem descontinuam nada sozinhos; só
+# sinalizam para revisão manual no painel admin.
+
+def create_alert(component_id, alert_type, site, details, expires_days=ALERT_DEFAULT_EXPIRY_DAYS):
+    """Cria um novo alerta pontual (preço, mismatch entre lojas, etc)."""
+    if alert_type not in ALLOWED_ALERT_TYPES:
+        print(f"[ALERT] Tipo invalido ignorado: {alert_type}")
+        return None
+    try:
+        expires_at = None
+        if expires_days:
+            expires_at = time.strftime(
+                "%Y-%m-%dT%H:%M:%SZ",
+                time.gmtime(time.time() + expires_days * 86400)
+            )
+        payload = {
+            "component_id": component_id,
+            "type": alert_type,
+            "site": site,
+            "details": details,
+            "expires_at": expires_at,
+        }
+        response = supabase.table("scraper_alerts").insert(payload).execute()
+        print(f"[ALERT] Criado: {alert_type} | site={site} | component={component_id}")
+        return response.data[0] if response.data else None
+    except Exception as e:
+        print(f"[ALERT] Falha ao criar alerta: {e}")
+        return None
+
+
+def get_open_alert(component_id, alert_type, site):
+    """Busca um alerta não resolvido existente para (component_id, type, site)."""
+    try:
+        query = (
+            supabase.table("scraper_alerts")
+            .select("*")
+            .eq("type", alert_type)
+            .eq("resolved", False)
+        )
+        if component_id is None:
+            query = query.is_("component_id", "null")
+        else:
+            query = query.eq("component_id", component_id)
+        if site is None:
+            query = query.is_("site", "null")
+        else:
+            query = query.eq("site", site)
+        response = query.limit(1).execute()
+        return response.data[0] if response.data else None
+    except Exception as e:
+        print(f"[ALERT] Falha ao buscar alerta aberto: {e}")
+        return None
+
+
+def upsert_streak_alert(component_id, alert_type, site, details, expires_days=ALERT_DEFAULT_EXPIRY_DAYS):
+    """
+    Cria um alerta de streak (not_found_streak / possible_discontinued) ou, se já existir
+    um aberto para o mesmo (component_id, type, site), só atualiza os detalhes — evita
+    spam de alertas duplicados a cada run enquanto a condição persistir.
+    """
+    existing = get_open_alert(component_id, alert_type, site)
+    if existing:
+        try:
+            expires_at = None
+            if expires_days:
+                expires_at = time.strftime(
+                    "%Y-%m-%dT%H:%M:%SZ",
+                    time.gmtime(time.time() + expires_days * 86400)
+                )
+            supabase.table("scraper_alerts").update({
+                "details": details,
+                "expires_at": expires_at,
+            }).eq("id", existing["id"]).execute()
+        except Exception as e:
+            print(f"[ALERT] Falha ao atualizar alerta existente: {e}")
+        return existing["id"]
+    else:
+        created = create_alert(component_id, alert_type, site, details, expires_days)
+        return created["id"] if created else None
+
+
+def resolve_streak_alert_if_open(component_id, alert_type, site):
+    """Marca como resolvido um alerta de streak quando a condição que o gerou já passou."""
+    existing = get_open_alert(component_id, alert_type, site)
+    if existing:
+        try:
+            resolved_ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            supabase.table("scraper_alerts").update({
+                "resolved": True,
+                "resolved_at": resolved_ts,
+            }).eq("id", existing["id"]).execute()
+            print(f"[ALERT] Resolvido automaticamente: {alert_type} | site={site} | component={component_id}")
+        except Exception as e:
+            print(f"[ALERT] Falha ao resolver alerta: {e}")
+
+
+def record_run_health(stats):
+    """
+    [MONITORING] Registra um snapshot de saúde da run atual. Sempre grava (mesmo em runs
+    saudáveis), pra dar histórico contínuo no painel admin; runs saudáveis já nascem
+    resolved=True (não poluem a lista de "precisa de atenção"), runs problemáticas ficam
+    resolved=False até alguém revisar.
+
+    [FIX 15/08] Adicionado amazon_error_page_pct (páginas "Algo deu errado" da Amazon,
+    tipicamente vistas no início da run) como sinal separado de amazon_error_pct genérico,
+    pra dar visibilidade específica desse padrão de bloqueio no aquecimento do driver.
+    Ele também entra no cálculo de "problematic", no mesmo espírito do captcha_pct.
+    """
+    total = stats["total_attempted"] or 1
+    captcha_pct = (stats["amazon_captcha_count"] / total) * 100
+    amazon_error_page_pct = (stats["amazon_error_page_count"] / total) * 100
+    kabum_error_pct = (stats["kabum_error_count"] / total) * 100
+    amazon_error_pct = (stats["amazon_error_count"] / total) * 100
+
+    problematic = (
+        captcha_pct >= RUN_HEALTH_FAILURE_PCT
+        or amazon_error_page_pct >= RUN_HEALTH_FAILURE_PCT
+        or kabum_error_pct >= RUN_HEALTH_FAILURE_PCT
+        or amazon_error_pct >= RUN_HEALTH_FAILURE_PCT
+        or stats["cut_short_by_time_limit"]
+    )
+
+    llm_confirm_rate = None
+    if stats["llm_fallback_attempts"] > 0:
+        llm_confirm_rate = round(
+            (stats["llm_fallback_confirmed"] / stats["llm_fallback_attempts"]) * 100, 1
+        )
+
+    details = {
+        "total_componentes_tentados": stats["total_attempted"],
+        "componentes_pendentes_por_tempo": stats["deferred_count"],
+        "run_cortada_por_tempo": stats["cut_short_by_time_limit"],
+        "amazon_captcha_pct": round(captcha_pct, 1),
+        "amazon_error_page_pct": round(amazon_error_page_pct, 1),
+        "kabum_error_pct": round(kabum_error_pct, 1),
+        "amazon_error_pct": round(amazon_error_pct, 1),
+        "llm_fallback_attempts": stats["llm_fallback_attempts"],
+        "llm_fallback_confirm_rate_pct": llm_confirm_rate,
+        "duracao_minutos": round(stats["elapsed_minutes"], 1),
+    }
+
+    try:
+        expires_at = time.strftime(
+            "%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + RUN_HEALTH_EXPIRY_DAYS * 86400)
+        )
+        resolved = not problematic
+        supabase.table("scraper_alerts").insert({
+            "component_id": None,
+            "type": "run_health",
+            "site": None,
+            "details": details,
+            "resolved": resolved,
+            "resolved_at": None if problematic else time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "expires_at": expires_at,
+        }).execute()
+        print(f"[RUN HEALTH] Registrado (problematico={problematic}): {details}")
+    except Exception as e:
+        print(f"[RUN HEALTH] Falha ao registrar: {e}")
+
+
+# ---------------------------------------------------------------------------
 # DATABASE
 # ---------------------------------------------------------------------------
 
-def update_component_prices(component_id, results):
+def update_component_prices(component, results):
     """
-    Atualiza preços do componente no Supabase.
-    Se results for vazio (nada encontrado), reseta best_price mantendo updated_at.
+    Atualiza preços do componente no Supabase, com base no status found/not_found/error
+    retornado por cada site nesta run, e dispara os alertas de monitoramento cabíveis.
+
+    [MONITORING/FIX] Esta é a correção central pedida: antes, QUALQUER falha (erro,
+    timeout, exceção) resetava best_price inteiro pra null, apagando o último preço bom
+    mesmo quando a causa era um problema transitório. Agora:
+      - "found"     -> atualiza preço/url/found normalmente, zera o streak de misses.
+      - "not_found" -> reseta found/preço/url daquele site (comportamento visível ao app
+                       continua igual ao de hoje) e incrementa o streak de misses.
+      - "error"     -> NÃO mexe em nada do preço/url/found/misses daquele site. A run
+                       falhou tecnicamente, não o produto sumiu.
     """
-    try:
-        timestamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    component_id = component['id']
+    previous = component.get('best_price') or {}
+    prev_kabum = previous.get('kabum') or {}
+    prev_amazon = previous.get('amazon') or {}
+    timestamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
-        # Nada encontrado em nenhum site — reseta tudo
-        if not results:
-            reset_data = {
-                "best": {"url": None, "price": None, "store": None, "shipped_by_store": None},
-                "kabum": {"url": None, "found": False, "price": None, "shipped_by_store": None},
-                "amazon": {"url": None, "found": False, "price": None, "shipped_by_store": None},
-                "updated_at": timestamp
-            }
-
-            response = supabase.table("components").update({
-                "best_price": reset_data
-            }).eq("id", component_id).execute()
-
-            if response.data:
-                print(f"[DB] best_price resetado para componente {component_id}")
-                return True
-            else:
-                print(f"ERRO: Falha ao resetar componente {component_id}")
-                return False
-
-        # Montar estrutura com os resultados encontrados
-        best_price_data = {
-            "best": {"url": None, "price": None, "store": None, "shipped_by_store": None},
-            "kabum": {"url": None, "found": False, "price": None, "shipped_by_store": None},
-            "amazon": {"url": None, "found": False, "price": None, "shipped_by_store": None},
-            "updated_at": timestamp
+    if not results:
+        # Defensivo: nunca deveria acontecer (main() sempre monta um results bem-formado),
+        # mas se acontecer, trata como erro nos dois sites — não mexe em nada.
+        results = {
+            "kabum": {"status": "error", "data": None, "meta": {"error_type": "missing_results"}},
+            "amazon": {"status": "error", "data": None, "meta": {"error_type": "missing_results"}},
         }
 
-        if 'kabum' in results and results['kabum'].get('preco'):
-            best_price_data['kabum'] = {
-                "url": results['kabum'].get('url'),
-                "found": True,
-                "price": results['kabum']['preco'],
-                "shipped_by_store": results['kabum'].get('shipped_by_store')
-            }
+    new_best_price = {
+        "best": {"url": None, "price": None, "store": None, "shipped_by_store": None},
+        "kabum": dict(prev_kabum) if prev_kabum else {"url": None, "found": False, "price": None, "shipped_by_store": None},
+        "amazon": dict(prev_amazon) if prev_amazon else {"url": None, "found": False, "price": None, "shipped_by_store": None},
+        "updated_at": timestamp,
+    }
+    # Garante presença das chaves de streak mesmo em best_price antigos (pré-migração)
+    for site_key in ("kabum", "amazon"):
+        new_best_price[site_key].setdefault("consecutive_misses", 0)
+        new_best_price[site_key].setdefault("last_found_at", None)
 
-        if 'amazon' in results and results['amazon'].get('preco'):
-            best_price_data['amazon'] = {
-                "url": results['amazon'].get('url'),
-                "found": True,
-                "price": results['amazon']['preco'],
-                "shipped_by_store": results['amazon'].get('shipped_by_store')
-            }
+    site_prices_this_run = {}
 
-        # Determinar melhor preço
-        valid_prices = []
-        if best_price_data['kabum']['found']:
-            valid_prices.append(('kabum', best_price_data['kabum']['price']))
-        if best_price_data['amazon']['found']:
-            valid_prices.append(('amazon', best_price_data['amazon']['price']))
+    for site in ("kabum", "amazon"):
+        site_result = results.get(site) or {"status": "error", "data": None, "meta": {}}
+        status = site_result.get("status", "error")
+        data = site_result.get("data")
+        site_state = new_best_price[site]
+        previous_price = site_state.get("price")
 
-        if valid_prices:
-            best_store, best_price = min(valid_prices, key=lambda x: x[1])
-            best_price_data['best'] = {
-                "url": best_price_data[best_store]['url'],
-                "price": best_price,
-                "store": best_store,
-                "shipped_by_store": best_price_data[best_store]['shipped_by_store']
-            }
+        if status == "found" and data:
+            new_price = data["preco"]
+            site_state["found"] = True
+            site_state["price"] = new_price
+            site_state["url"] = data.get("url")
+            site_state["shipped_by_store"] = data.get("shipped_by_store")
+            site_state["consecutive_misses"] = 0
+            site_state["last_found_at"] = timestamp
+            site_prices_this_run[site] = {"price": new_price, "produto": data.get("produto")}
 
+            # Alerta de variação de preço vs a última leitura conhecida daquele site
+            if previous_price is not None and previous_price > 0:
+                pct_change = ((new_price - previous_price) / previous_price) * 100
+                if abs(pct_change) >= PRICE_CHANGE_ALERT_PCT:
+                    alert_type = "price_spike" if pct_change > 0 else "price_drop"
+                    create_alert(component_id, alert_type, site, {
+                        "preco_anterior": previous_price,
+                        "preco_novo": new_price,
+                        "variacao_pct": round(pct_change, 1),
+                        "produto": data.get("produto"),
+                        "url": data.get("url"),
+                    })
+
+            # Voltou a achar — resolve eventual alerta de streak aberto nesse site
+            resolve_streak_alert_if_open(component_id, "not_found_streak", site)
+
+        elif status == "not_found":
+            site_state["found"] = False
+            site_state["price"] = None
+            site_state["url"] = None
+            site_state["shipped_by_store"] = None
+            site_state["consecutive_misses"] = (site_state.get("consecutive_misses") or 0) + 1
+            # last_found_at permanece com o valor anterior — não mexe
+
+            if site_state["consecutive_misses"] >= NOT_FOUND_STREAK_THRESHOLD:
+                upsert_streak_alert(component_id, "not_found_streak", site, {
+                    "consecutive_misses": site_state["consecutive_misses"],
+                    "last_found_at": site_state.get("last_found_at"),
+                })
+
+        else:
+            # status == "error" — não mexe em preço/url/found/misses daquele site.
+            pass
+
+    # Alerta de possível descontinuado — misses altos nos DOIS sites ao mesmo tempo.
+    # Exige os dois simultâneos porque um miss isolado de um site costuma ser problema
+    # de matching daquele site específico, não o produto ter saído de linha de verdade.
+    kabum_misses = new_best_price["kabum"].get("consecutive_misses") or 0
+    amazon_misses = new_best_price["amazon"].get("consecutive_misses") or 0
+    if kabum_misses >= DISCONTINUED_STREAK_THRESHOLD and amazon_misses >= DISCONTINUED_STREAK_THRESHOLD:
+        upsert_streak_alert(component_id, "possible_discontinued", None, {
+            "kabum_consecutive_misses": kabum_misses,
+            "amazon_consecutive_misses": amazon_misses,
+        })
+    else:
+        resolve_streak_alert_if_open(component_id, "possible_discontinued", None)
+
+    # Alerta de divergência entre lojas na MESMA run — sinal de possível erro de matching
+    # (ex: um site pegou a versão 8GB e o outro a versão 12GB do mesmo modelo de GPU).
+    if "kabum" in site_prices_this_run and "amazon" in site_prices_this_run:
+        k_price = site_prices_this_run["kabum"]["price"]
+        a_price = site_prices_this_run["amazon"]["price"]
+        menor = min(k_price, a_price)
+        if menor > 0:
+            pct_diff = abs(k_price - a_price) / menor * 100
+            if pct_diff >= STORE_MISMATCH_ALERT_PCT:
+                create_alert(component_id, "store_mismatch", None, {
+                    "preco_kabum": k_price,
+                    "preco_amazon": a_price,
+                    "variacao_pct": round(pct_diff, 1),
+                    "produto_kabum": site_prices_this_run["kabum"]["produto"],
+                    "produto_amazon": site_prices_this_run["amazon"]["produto"],
+                })
+
+    # Determinar melhor preço entre os encontrados nesta consolidação
+    candidates = []
+    for site in ("kabum", "amazon"):
+        if new_best_price[site]["found"] and new_best_price[site]["price"]:
+            candidates.append((site, new_best_price[site]["price"]))
+
+    if candidates:
+        best_site, best_price = min(candidates, key=lambda x: x[1])
+        new_best_price["best"] = {
+            "url": new_best_price[best_site]["url"],
+            "price": best_price,
+            "store": best_site,
+            "shipped_by_store": new_best_price[best_site]["shipped_by_store"],
+        }
+
+    try:
         response = supabase.table("components").update({
-            "best_price": best_price_data
+            "best_price": new_best_price
         }).eq("id", component_id).execute()
 
         if response.data:
@@ -1596,6 +2066,48 @@ MAX_RUNTIME_MINUTES = 300  # Para dentro de 5h, deixando 1h de margem pro timeou
 PER_COMPONENT_TIMEOUT_S = 300  # Watchdog: aborta se um único componente passar de 5min
 
 
+def _build_error_results(error_type):
+    """
+    [MONITORING/FIX] Monta um results bem-formado (ambos os sites como 'error') para os
+    casos em que scrape_component nem chegou a rodar de verdade (watchdog timeout ou
+    exceção inesperada no wrapper). Antes, esses casos viravam None e resetavam o
+    best_price inteiro — agora são tratados como erro técnico, sem mexer no preço salvo.
+    """
+    meta = {"error_type": error_type, "llm_used": False, "llm_confirmed": False}
+    return {
+        "kabum": {"status": "error", "data": None, "meta": dict(meta)},
+        "amazon": {"status": "error", "data": None, "meta": dict(meta)},
+    }
+
+
+def _accumulate_stats(stats, results):
+    """
+    [MONITORING] Acumula métricas de saúde da run a partir do results de um componente.
+
+    [FIX 15/08] Passa a contar separadamente amazon_error_page_count (bloqueio "Algo deu
+    errado"), antes misturado dentro de amazon_error_count genérico.
+    """
+    kabum = results.get("kabum") or {}
+    amazon = results.get("amazon") or {}
+    kabum_meta = kabum.get("meta") or {}
+    amazon_meta = amazon.get("meta") or {}
+
+    if kabum.get("status") == "error":
+        stats["kabum_error_count"] += 1
+    if amazon.get("status") == "error":
+        stats["amazon_error_count"] += 1
+    if amazon_meta.get("error_type") == "captcha":
+        stats["amazon_captcha_count"] += 1
+    if amazon_meta.get("error_type") == "amazon_error_page":
+        stats["amazon_error_page_count"] += 1
+
+    for meta in (kabum_meta, amazon_meta):
+        if meta.get("llm_used"):
+            stats["llm_fallback_attempts"] += 1
+            if meta.get("llm_confirmed"):
+                stats["llm_fallback_confirmed"] += 1
+
+
 def main():
     print("=" * 60)
     print("Price Scraper - Kabum & Amazon")
@@ -1609,6 +2121,22 @@ def main():
         return
 
     start_time = time.time()
+
+    # [MONITORING] Estatisticas da run inteira, usadas pra registrar o alerta run_health
+    # no final (captcha, falhas tecnicas, cortes por tempo, taxa de confirmacao do LLM).
+    # [FIX 15/08] amazon_error_page_count adicionado (ver _accumulate_stats/record_run_health).
+    stats = {
+        "total_attempted": 0,
+        "kabum_error_count": 0,
+        "amazon_error_count": 0,
+        "amazon_captcha_count": 0,
+        "amazon_error_page_count": 0,
+        "llm_fallback_attempts": 0,
+        "llm_fallback_confirmed": 0,
+        "deferred_count": 0,
+        "cut_short_by_time_limit": False,
+        "elapsed_minutes": 0,
+    }
 
     try:
         # Ordena pelos mais antigos primeiro — nunca atualizados (null) têm prioridade máxima
@@ -1631,6 +2159,8 @@ def main():
             remaining = MAX_RUNTIME_MINUTES - elapsed
 
             if remaining < 5:
+                stats["cut_short_by_time_limit"] = True
+                stats["deferred_count"] = len(components) - (i - 1)
                 print(f"\n⏰ Limite de tempo atingido ({elapsed:.0f}min). Processados {i - 1}/{len(components)} componentes.")
                 print("Os componentes restantes serao priorizados na proxima execucao.")
                 break
@@ -1644,13 +2174,16 @@ def main():
                     )
             except FutTimeout:
                 print(f"[WATCHDOG] Componente {component.get('id')} excedeu {PER_COMPONENT_TIMEOUT_S}s — pulando")
-                results = None
+                results = _build_error_results("watchdog_timeout")
             except Exception as e:
                 print(f"[WATCHDOG] Erro inesperado em scrape_component: {e}")
-                results = None
+                results = _build_error_results("unexpected_exception")
 
-            # Sempre atualiza — com resultados ou resetando
-            update_component_prices(component['id'], results)
+            stats["total_attempted"] += 1
+            _accumulate_stats(stats, results)
+
+            # Sempre atualiza — found/not_found/error tratados corretamente por site
+            update_component_prices(component, results)
 
             if i < len(components):
                 delay = random.uniform(8, 15)
@@ -1666,6 +2199,9 @@ def main():
         print(f"ERRO CRITICO: Falha ao buscar componentes - {e}")
 
     finally:
+        stats["elapsed_minutes"] = (time.time() - start_time) / 60
+        if stats["total_attempted"] > 0:
+            record_run_health(stats)
         scraper.close()
 
 
