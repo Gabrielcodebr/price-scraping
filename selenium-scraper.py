@@ -135,8 +135,7 @@ KNOWN_VRAM_CAPACITIES_GB = {1, 2, 3, 4, 6, 8, 10, 11, 12, 16, 20, 24, 32, 48}
 # [MONITORING] Thresholds definidos junto com o usuário: 80% de variação de preço é um
 # chute consciente ("raro um produto ficar tão mais caro/barato do uma run pra outra,
 # mesmo em Black Friday") — serve como sinalizador para revisão manual, não como
-# verdade absoluta. Cadência do scraper é 2x/semana, então os thresholds de streak
-# (4 e 8 misses) equivalem a ~2 semanas e ~1 mês sem achar o produto, respectivamente.
+# verdade absoluta.
 PRICE_CHANGE_ALERT_PCT = 80          # variação % (preço novo vs preço salvo) no mesmo site
 STORE_MISMATCH_ALERT_PCT = 80        # diferença % entre Kabum e Amazon na MESMA run
 NOT_FOUND_STREAK_THRESHOLD = 4       # misses consecutivos em um site -> alerta "sumindo"
