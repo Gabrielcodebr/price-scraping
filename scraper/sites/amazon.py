@@ -6,6 +6,14 @@ from selenium.webdriver.common.by import By
 
 from ..matching_rules import EXCLUSION_KEYWORDS
 
+# [FEATURE 01/09] Quantos candidatos extras (além do mais barato) cada site manda pra
+# price_scraper.py combinar. O corte final pros "5 no total" (Kabum + Amazon combinados)
+# acontece lá, não aqui — 5 por site é o máximo que qualquer site sozinho poderia
+# precisar contribuir pro combinado (se TODOS os 5 mais baratos vierem de um único site).
+# Mesma constante existe em sites/kabum.py; se um dia sair do lugar, considerar mover
+# pra config.py pra não haver risco dos dois valores divergirem.
+ALT_PRICES_PER_SITE = 5
+
 
 class AmazonMixin:
     """Mixin de PriceScraper: busca e extração de preços na Amazon."""
@@ -138,6 +146,15 @@ class AmazonMixin:
         na primeira tentativa. O error_type fica marcado como "amazon_error_page" nesses
         casos, separado de "no_candidates"/"captcha", para facilitar diagnóstico futuro
         nas métricas de run_health.
+
+        [FEATURE 01/09] meta também carrega "extra_candidates": lista de até
+        ALT_PRICES_PER_SITE produtos validados (mesmas regras de matching do cheapest),
+        vindos direto da listagem já raspada — sem nenhuma navegação extra além da que já
+        acontecia (a página do cheapest continua sendo aberta normalmente pra verificar
+        vendedor, como sempre). Diferença importante: como não abrimos a página individual
+        dos extras, `shipped_by_store` vem sempre `None` neles — "não verificado", não
+        "confirmado como vendedor externo" (que seria `False`). Sempre presente (lista
+        vazia quando não há found ou não sobrou candidato extra).
         """
         produto = component['name']
         marca = component.get('brand')
@@ -149,7 +166,7 @@ class AmazonMixin:
         if modelo:
             print(f"[AMAZON] Modelo para validacao: {modelo}")
 
-        meta = {"error_type": None, "llm_used": False, "llm_confirmed": False}
+        meta = {"error_type": None, "llm_used": False, "llm_confirmed": False, "extra_candidates": []}
 
         self.warm_up_amazon()
 
@@ -402,6 +419,27 @@ class AmazonMixin:
             print(f"[AMAZON] Top 3 precos encontrados:")
             for i, p in enumerate(valid_products[:3], 1):
                 print(f"  {i}. R$ {p['price']:.2f} - {p['name'][:60]}...")
+
+            # [FEATURE 01/09] Candidatos extras: próximos mais baratos depois do cheapest,
+            # já validados pelo mesmo is_exact_product_match (ou já confirmados via Groq,
+            # se cheapest veio do fallback). Nenhuma navegação extra: nome/preço/link já
+            # estavam em `all_candidates`, só filtramos e fatiamos.
+            # shipped_by_store fica None (não verificado) — diferente de False, que
+            # significaria "confirmado vendedor externo". Não abrimos a página desses
+            # produtos, então não temos como saber e não queremos afirmar algo errado.
+            extra = valid_products[1:1 + ALT_PRICES_PER_SITE]
+            meta["extra_candidates"] = [
+                {
+                    "site": "amazon",
+                    "produto": p["name"],
+                    "preco": p["price"],
+                    "url": p.get("link"),
+                    "shipped_by_store": None,
+                }
+                for p in extra
+            ]
+            if meta["extra_candidates"]:
+                print(f"[AMAZON] Candidatos extras capturados: {len(meta['extra_candidates'])}")
 
             # Entrar na página do produto para pegar URL direta e verificar vendedor
             shipped_by_store = None

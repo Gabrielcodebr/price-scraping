@@ -4,7 +4,7 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutTimeout
 
 from .config import supabase, MAX_RUNTIME_MINUTES, PER_COMPONENT_TIMEOUT_S
 from .price_scraper import PriceScraper
-from .database import update_component_prices
+from .database import update_component_prices, update_component_alt_prices
 from .alerts import record_run_health
 
 # ---------------------------------------------------------------------------
@@ -18,6 +18,11 @@ def _build_error_results(error_type):
     casos em que scrape_component nem chegou a rodar de verdade (watchdog timeout ou
     exceção inesperada no wrapper). Antes, esses casos viravam None e resetavam o
     best_price inteiro — agora são tratados como erro técnico, sem mexer no preço salvo.
+
+    [FEATURE 01/09] Não inclui a chave "alt_prices" de propósito (mesmo comportamento de
+    antes) — quem consome results via .get("alt_prices", []) já trata a ausência como
+    lista vazia, e update_component_alt_prices nem chega a olhar pra ela nesse caso,
+    já que os dois status vêm "error" e a função faz early-return sem mexer em nada.
     """
     meta = {"error_type": error_type, "llm_used": False, "llm_confirmed": False}
     return {
@@ -130,6 +135,22 @@ def main():
 
             # Sempre atualiza — found/not_found/error tratados corretamente por site
             update_component_prices(component, results)
+
+            # [FEATURE 01/09] Atualiza os preços alternativos (Kabum+Amazon combinados,
+            # já sem abrir página individual — ver PriceScraper.scrape_component). Extrai
+            # os status de dentro do próprio results, já que é a mesma fonte usada acima
+            # em update_component_prices — não há necessidade de guardar kabum_status/
+            # amazon_status separados no loop, results já é a fonte única de verdade.
+            # .get(..., []) e .get(..., "error") cobrem tanto o caminho normal (chaves
+            # sempre presentes) quanto o caminho de watchdog (_build_error_results, que
+            # não inclui "alt_prices" e cujos status já vêm "error" — a função decide
+            # sozinha não mexer em nada nesse caso).
+            update_component_alt_prices(
+                component['id'],
+                results.get("alt_prices", []),
+                results.get("kabum", {}).get("status", "error"),
+                results.get("amazon", {}).get("status", "error"),
+            )
 
             if i < len(components):
                 delay = random.uniform(8, 15)

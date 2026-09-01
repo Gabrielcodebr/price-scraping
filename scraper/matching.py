@@ -246,7 +246,25 @@ class MatchingMixin:
         if ' para ' in product_name_lower:
             first_para_idx = product_name_lower.index(' para ')
             tokens_before_para = self.extract_key_tokens(product_name_lower[:first_para_idx])
-            if not any(t in tokens_before_para for t in search_tokens):
+
+            # [FIX 01/09] Bug real observado em produção: buscando "MSI MAG Z890 TOMAHAWK
+            # WIFI" (variante COM wifi da placa, "wifi" é token legítimo do modelo), passou
+            # uma "Antena WiFi 7 ... para MSI MAG X870 ... Z890 ... TOMAHAWK ...". A checagem
+            # original aceitava se QUALQUER token do modelo buscado aparecesse antes do
+            # "para" — e "wifi" batia por coincidência (a antena é "WiFi", não a placa),
+            # derrubando essa proteção mesmo o produto sendo claramente um acessório
+            # genérico pra várias placas.
+            #
+            # Fix: priorizar tokens com dígito (ex: "z890") nessa checagem — são
+            # identificadores de modelo muito mais confiáveis do que palavras descritivas
+            # sem dígito ("wifi", "tomahawk", etc.), que podem aparecer à toa na descrição
+            # do PRÓPRIO acessório. Só cai no fallback de checar todos os tokens se o
+            # modelo buscado não tiver nenhum token numérico (ex: modelo só com nome,
+            # tipo "Vengeance" sem código).
+            search_tokens_with_digit = [t for t in search_tokens if re.search(r'\d', t)]
+            tokens_to_check = search_tokens_with_digit if search_tokens_with_digit else search_tokens
+
+            if not any(t in tokens_before_para for t in tokens_to_check):
                 print(f"  [MATCH] REJEITADO (tokens só após 'para' - acessório): {product_name[:80]}")
                 return False
 

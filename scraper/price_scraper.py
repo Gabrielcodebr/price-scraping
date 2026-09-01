@@ -3,6 +3,14 @@ from .matching import MatchingMixin
 from .sites.kabum import KabumMixin
 from .sites.amazon import AmazonMixin
 
+# [FEATURE 01/09] Teto de preços alternativos combinados (Kabum + Amazon) por componente,
+# guardados em component_alt_prices (ver database.py). "5 no total" já excluindo os preços
+# que viraram best_price.kabum/best_price.amazon — cada site já manda no máximo
+# ALT_PRICES_PER_SITE (5) candidatos SEM o próprio mais barato (ver extra_candidates em
+# sites/kabum.py e sites/amazon.py). Aqui só juntamos as duas listas, ordenamos por preço
+# e cortamos nesse teto.
+ALT_PRICES_TOTAL = 5
+
 
 class PriceScraper(HumanBehaviorMixin, MatchingMixin, KabumMixin, AmazonMixin):
     """
@@ -35,6 +43,15 @@ class PriceScraper(HumanBehaviorMixin, MatchingMixin, KabumMixin, AmazonMixin):
         [MONITORING/FIX] Retorna um dict com o status/dados/meta de cada site, sempre
         presentes (nunca um dict vazio ou None), para que update_component_prices possa
         decidir com precisão o que fazer em cada caso (found/not_found/error).
+
+        [FEATURE 01/09] results também carrega "alt_prices": lista combinada de até
+        ALT_PRICES_TOTAL preços alternativos (Kabum + Amazon juntos, ordenados do mais
+        barato pro mais caro), montada a partir de kabum_meta/amazon_meta["extra_candidates"]
+        — dados que já vieram das listagens raspadas nesta mesma run, sem nenhum
+        request/navegação adicional. Cada site já contribui só com candidatos que passaram
+        no matching e que NÃO são o próprio mais barato daquele site (esse já está em
+        kabum_data/amazon_data e vai pro best_price normal). Lista vazia quando não há
+        candidatos extras de nenhum site.
         """
         component_id = component['id']
         component_name = component['name']
@@ -49,9 +66,18 @@ class PriceScraper(HumanBehaviorMixin, MatchingMixin, KabumMixin, AmazonMixin):
 
         amazon_status, amazon_data, amazon_meta = self.search_amazon(component)
 
+        # [FEATURE 01/09] Junta os candidatos extras dos dois sites, ordena pelo preço e
+        # corta em ALT_PRICES_TOTAL. .get(..., []) defensivo: mesmo que algum dia um site
+        # pare de preencher "extra_candidates" (ou o status não seja "found"), isso nunca
+        # deve quebrar a run — só resulta em menos itens (ou nenhum) na lista combinada.
+        kabum_extra = kabum_meta.get("extra_candidates", [])
+        amazon_extra = amazon_meta.get("extra_candidates", [])
+        alt_prices = sorted(kabum_extra + amazon_extra, key=lambda x: x["preco"])[:ALT_PRICES_TOTAL]
+
         results = {
             "kabum": {"status": kabum_status, "data": kabum_data, "meta": kabum_meta},
             "amazon": {"status": amazon_status, "data": amazon_data, "meta": amazon_meta},
+            "alt_prices": alt_prices,
         }
 
         print(f"\n--- Resumo: {component_name} ---")
@@ -83,6 +109,13 @@ class PriceScraper(HumanBehaviorMixin, MatchingMixin, KabumMixin, AmazonMixin):
             print(f"Melhor preco (nesta run): {best_site.upper()} - R$ {best_price:.2f}")
         else:
             print("Nenhum preco encontrado nesta run")
+
+        # [FEATURE 01/09] Log dos preços alternativos combinados, só pra visibilidade no
+        # console da run — quem realmente persiste isso é database.py (Parte 6).
+        if alt_prices:
+            print(f"Precos alternativos capturados: {len(alt_prices)}")
+            for i, p in enumerate(alt_prices, 1):
+                print(f"  {i}. [{p['site'].upper()}] R$ {p['preco']:.2f} - {p['produto'][:60]}...")
 
         print(f"{'=' * 60}\n")
 

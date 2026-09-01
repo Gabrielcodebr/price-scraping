@@ -9,6 +9,14 @@ from selenium.common.exceptions import TimeoutException
 
 from ..matching_rules import EXCLUSION_KEYWORDS
 
+# [FEATURE 01/09] Quantos candidatos extras (além do mais barato) cada site manda pra
+# price_scraper.py combinar. O corte final pros "5 no total" (Kabum + Amazon combinados)
+# acontece lá, não aqui — 5 por site é o máximo que qualquer site sozinho poderia
+# precisar contribuir pro combinado (se TODOS os 5 mais baratos vierem de um único site).
+# Mesma constante existe em sites/amazon.py; se um dia sair do lugar, considerar mover
+# pra config.py pra não haver risco dos dois valores divergirem.
+ALT_PRICES_PER_SITE = 5
+
 
 class KabumMixin:
     """Mixin de PriceScraper: busca e extração de preços na Kabum."""
@@ -138,6 +146,12 @@ class KabumMixin:
                            preço salvo — só reflete que essa tentativa específica falhou.
         meta é um dict com detalhes técnicos (error_type, uso do fallback LLM) usados
         só para as métricas de saúde da run, sem afetar a lógica de matching em si.
+
+        [FEATURE 01/09] meta também carrega "extra_candidates": lista de até
+        ALT_PRICES_PER_SITE produtos validados (mesmas regras de matching do cheapest),
+        vindos direto da listagem já raspada — sem nenhuma navegação extra. Usado por
+        price_scraper.py pra montar os "preços alternativos" combinados com a Amazon.
+        Sempre presente (lista vazia quando não há found ou não sobrou candidato extra).
         """
         produto = component['name']
         marca = component.get('brand')
@@ -149,7 +163,7 @@ class KabumMixin:
         if modelo:
             print(f"[KABUM] Modelo para validacao: {modelo}")
 
-        meta = {"error_type": None, "llm_used": False, "llm_confirmed": False}
+        meta = {"error_type": None, "llm_used": False, "llm_confirmed": False, "extra_candidates": []}
 
         try:
             search_term = f"{marca} {produto}" if marca and marca.lower() not in produto.lower() else produto
@@ -488,6 +502,27 @@ class KabumMixin:
             print(f"[KABUM] Top 3 precos encontrados:")
             for i, p in enumerate(valid_products[:3], 1):
                 print(f"  {i}. R$ {p['price']:.2f} - {p['name'][:60]}...")
+
+            # [FEATURE 01/09] Candidatos extras: próximos mais baratos depois do cheapest,
+            # já validados pelo mesmo is_exact_product_match (ou já confirmados via Groq,
+            # se cheapest veio do fallback — nesse caso normalmente não sobra mais nenhum,
+            # já que o Groq para no primeiro confirmado). Nenhuma navegação extra: os dados
+            # (nome/preço/url) já estavam em `all_candidates`, só filtramos e fatiamos.
+            # shipped_by_store fica True pros extras também — o filtro "KaBuM!" já garante
+            # que são vendidos pela própria Kabum, sem precisar abrir a página de cada um.
+            extra = valid_products[1:1 + ALT_PRICES_PER_SITE]
+            meta["extra_candidates"] = [
+                {
+                    "site": "kabum",
+                    "produto": p["name"],
+                    "preco": p["price"],
+                    "url": p.get("url"),
+                    "shipped_by_store": True,
+                }
+                for p in extra
+            ]
+            if meta["extra_candidates"]:
+                print(f"[KABUM] Candidatos extras capturados: {len(meta['extra_candidates'])}")
 
             direct_url = cheapest.get("url") or self.driver.current_url
 

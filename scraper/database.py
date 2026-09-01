@@ -165,3 +165,48 @@ def update_component_prices(component, results):
     except Exception as e:
         print(f"ERRO CRITICO: Falha ao atualizar Supabase - {e}")
         return False
+
+
+def update_component_alt_prices(component_id, alt_prices, kabum_status, amazon_status):
+    """
+    [FEATURE 01/09] Atualiza a tabela component_alt_prices com os preços alternativos
+    (até 5, combinados Kabum+Amazon) capturados nesta run — direto da listagem, sem abrir
+    página individual (ver extra_candidates em sites/kabum.py e sites/amazon.py, e a
+    combinação em PriceScraper.scrape_component).
+
+    É um SNAPSHOT, não histórico: o array inteiro é sobrescrito a cada run (por isso
+    upsert simples, sem lógica de streak/alerta como em update_component_prices).
+
+    IMPORTANTE — mesma cautela do fix central de update_component_prices: se os DOIS
+    sites falharam tecnicamente nesta run (kabum_status == amazon_status == "error"),
+    NÃO sobrescreve nada. alt_prices só é populado dentro de search_kabum/search_amazon
+    no caminho "found" — se os dois deram erro técnico, um alt_prices vazio aqui não
+    significa "não há mais opções de preço", significa "a run não conseguiu nem tentar".
+    Sobrescrever com [] nesse cenário apagaria dados válidos de runs anteriores à toa,
+    o mesmo problema que motivou reescrever update_component_prices. Nos demais casos
+    (found/not_found, mesmo que só um dos dois sites tenha funcionado) o array É
+    sobrescrito normalmente, inclusive quando fica vazio de propósito (matching rodou
+    certinho mas não sobrou candidato extra além do principal).
+    """
+    if kabum_status == "error" and amazon_status == "error":
+        print(f"[ALT_PRICES] Kabum e Amazon falharam tecnicamente — mantendo alt_prices anterior de {component_id}")
+        return True  # não é falha da operação, é decisão de não mexer
+
+    timestamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+    try:
+        response = supabase.table("component_alt_prices").upsert({
+            "component_id": component_id,
+            "alt_prices": alt_prices,
+            "updated_at": timestamp,
+        }, on_conflict="component_id").execute()
+
+        if response.data:
+            return True
+        else:
+            print(f"ERRO: Falha ao atualizar alt_prices do componente {component_id}")
+            return False
+
+    except Exception as e:
+        print(f"ERRO CRITICO: Falha ao atualizar component_alt_prices - {e}")
+        return False
