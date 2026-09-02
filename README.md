@@ -11,13 +11,15 @@
 
 Este scraper busca e compara preços de componentes de hardware (placas de vídeo,
 processadores, SSDs, memórias RAM, etc.) na Kabum e na Amazon BR, roda automaticamente
-via GitHub Actions a cada 2 dias, e alimenta a tabela `components` do Supabase que o
-app React Native consome.
+via GitHub Actions a cada 2 dias, e alimenta duas tabelas no Supabase consumidas pelo
+app React Native: `components` (preço principal de cada site) e `component_alt_prices`
+(até 5 preços alternativos validados, capturados direto da listagem de busca).
 
 **Diferenciais:**
 - ✅ **Validação inteligente de produtos** - Evita variantes indesejadas (ex: não confunde RTX 5060 com RTX 5060 Ti)
 - ✅ **Validação de capacidade e geração** - Garante que 1TB é 1TB, DDR4 não é DDR5
 - ✅ **Filtro de vendedor** - Aceita apenas produtos vendidos pela própria loja (KaBuM! ou Amazon)
+- ✅ **Preços alternativos** - Captura até 5 outros produtos validados direto da listagem (sem abrir página individual), pra o app oferecer mais opções além do mais barato
 - ✅ **LLM como fallback** - Usa Groq (OpenAI/GPT-OSS-120b) quando o matching automático falha
 - ✅ **Scroll progressivo** - Carrega TODOS os produtos da página para encontrar o melhor preço
 - ✅ **Comportamento humanizado** - Simula digitação e movimentos de mouse para evitar detecção
@@ -39,10 +41,10 @@ scraper/
   matching.py              # decide se um produto encontrado é o componente buscado
   sites/
     kabum.py               # busca e extração de preços específicas da Kabum
-    amazon.py              # busca e extração de preços específicas da Amazon
+    amazon.py               # busca e extração de preços específicas da Amazon
   price_scraper.py         # classe PriceScraper — junta tudo acima em um scraper só
   alerts.py                # cria/atualiza/resolve alertas na tabela scraper_alerts
-  database.py              # grava o resultado da run na tabela components
+  database.py              # grava o resultado da run nas tabelas components e component_alt_prices
   main.py                  # loop principal: percorre componentes, watchdog, limites de tempo
 ```
 
@@ -62,9 +64,10 @@ de execução não há diferença nenhuma pra um arquivo único: `self.driver`,
 | Delays humanizados, scroll, digitação, setup do Chrome | `driver_utils.py` |
 | Filtro "KaBuM!", seletores de produto/preço da Kabum | `sites/kabum.py` |
 | Retry de "Algo deu errado", CAPTCHA, seletores da Amazon | `sites/amazon.py` |
+| Quantidade de preços alternativos capturados (por site / total combinado) | `sites/kabum.py` e `sites/amazon.py` (`ALT_PRICES_PER_SITE`), `price_scraper.py` (`ALT_PRICES_TOTAL`) |
 | Thresholds de alerta (% de variação de preço, streak de miss) | `config.py` |
 | Quando um alerta é criado/resolvido | `alerts.py` |
-| Como o preço é salvo no Supabase (found/not_found/error) | `database.py` |
+| Como o preço é salvo no Supabase (found/not_found/error) e os preços alternativos | `database.py` (`update_component_prices`, `update_component_alt_prices`) |
 | Tempo máximo de run, timeout por componente, loop principal | `main.py` |
 
 ---
@@ -89,6 +92,13 @@ de execução não há diferença nenhuma pra um arquivo único: `self.driver`,
 - **Kabum**: Aplica o filtro "Vendido por KaBuM!" antes de coletar resultados — rejeita vendedores terceiros
 - **Amazon**: Entra na página de cada produto para verificar se é vendido e enviado pela Amazon
 - O campo `shipped_by_store` é salvo no banco para cada loja
+
+### 💰 Preços Alternativos
+- Além do produto mais barato (que vira `best_price`), o scraper reaproveita os outros candidatos que também passaram no matching pra guardar até 5 "preços alternativos"
+- Vêm direto da listagem já raspada — **nenhuma navegação extra**, zero custo adicional de tempo/requests
+- Combinados entre Kabum e Amazon, ordenados do mais barato pro mais caro, salvos em `component_alt_prices`
+- É um snapshot por run (sobrescrito a cada execução, sem histórico), protegido pela mesma filosofia do `best_price`: se os dois sites falharem tecnicamente na mesma run, o snapshot anterior não é apagado
+- `shipped_by_store` desses itens: sempre `true` na Kabum (o filtro "KaBuM!" já garante isso), sempre `null` na Amazon (não verificado — a página individual não é aberta pra esses extras)
 
 ### 🚀 Performance
 - **Scroll progressivo**: Carrega todos os produtos (lazy loading)
@@ -269,6 +279,32 @@ best_price: {
 O campo `shipped_by_store` indica se o produto é vendido e entregue pela própria loja
 (`true`), por um vendedor externo (`false`), ou se não foi possível determinar (`null`).
 
+### Tabela `component_alt_prices`
+
+Populada por `database.py` (`update_component_alt_prices`). Um registro por componente,
+sobrescrito a cada run (snapshot, sem histórico):
+
+```jsonc
+{
+  "component_id": "uuid do componente",
+  "alt_prices": [
+    {
+      "site": "kabum",              // ou "amazon"
+      "produto": "Nome do produto como aparece na loja",
+      "preco": 189.9,
+      "url": "https://...",          // link direto do card da listagem, nunca visitado
+      "shipped_by_store": true       // sempre true na Kabum, sempre null na Amazon (não verificado)
+    }
+  ],
+  "updated_at": "2026-09-01T12:00:00Z"
+}
+```
+
+`alt_prices` tem de 0 a 5 itens, combinando Kabum + Amazon (excluindo o que já virou
+`best_price` de cada site), ordenados do mais barato pro mais caro. RLS: `SELECT`
+liberado só pra role `authenticated` (mesmo padrão de `components`); escrita só via
+service role key.
+
 ### Tabela `scraper_alerts`
 
 Populada por `alerts.py` (ver seção abaixo). Cada linha tem `component_id` (nulo para
@@ -287,6 +323,10 @@ o que evita que uma falha técnica passageira apague um preço bom salvo anterio
 | `found` | Produto localizado e validado | Atualiza preço/URL, zera o streak de misses |
 | `not_found` | Busca rodou normal, mas nada passou na validação (miss de negócio) | Reseta preço/URL daquele site, incrementa o streak de misses |
 | `error` | Falha técnica (CAPTCHA, timeout, página não carregou) | **Não mexe em nada** — preço salvo anteriormente é preservado |
+
+> A mesma proteção contra falha técnica dupla vale para `component_alt_prices`: se
+> Kabum e Amazon derem `error` na mesma run, o snapshot de preços alternativos anterior
+> é mantido — não é sobrescrito com uma lista vazia.
 
 A partir disso, `alerts.py` dispara (thresholds configuráveis em `config.py`):
 
@@ -430,6 +470,22 @@ def human_mouse_movement(element):
         random.randint(-5, 5),
         random.randint(-5, 5))
 ```
+
+### 8. Preços Alternativos (`sites/kabum.py`, `sites/amazon.py`, `price_scraper.py`)
+
+Os candidatos que também passaram no `is_exact_product_match` mas não foram escolhidos
+como o mais barato de cada site são reaproveitados — sem nenhuma requisição extra, já
+que os dados (nome, preço, link) já vieram da mesma página de listagem:
+
+```python
+# sites/kabum.py e sites/amazon.py — até 5 por site, excluindo o cheapest
+extra = valid_products[1:1 + ALT_PRICES_PER_SITE]
+
+# price_scraper.py — combina os dois sites e corta no teto total
+alt_prices = sorted(kabum_extra + amazon_extra, key=lambda x: x["preco"])[:ALT_PRICES_TOTAL]
+```
+
+Resultado salvo em `component_alt_prices` — ver [Schema do Banco de Dados](#️-schema-do-banco-de-dados).
 
 ---
 
