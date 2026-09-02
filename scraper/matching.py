@@ -11,6 +11,7 @@ from .matching_rules import (
     CHIP_MANUFACTURERS,
     KNOWN_STORAGE_CAPACITIES_GB,
     KNOWN_VRAM_CAPACITIES_GB,
+    FULL_PC_LEADING_WORDS,
 )
 
 
@@ -217,7 +218,8 @@ class MatchingMixin:
                          fallback para extrair capacidade de armazenamento quando
                          o model não contém essa informação (Bug#3).
             category: Categoria do componente (campo 'category'). Usado para ativar a
-                      checagem de VRAM em GPUs.
+                      checagem de VRAM em GPUs e para pular a checagem de PC completo
+                      em CASE (Bug#6).
             specifications: Dict de especificações do componente (campo 'specifications').
                              Usado para extrair a VRAM de referência em GPUs.
         """
@@ -229,6 +231,22 @@ class MatchingMixin:
         for keyword in EXCLUSION_KEYWORDS:
             if keyword in product_name_lower:
                 print(f"  [MATCH] REJEITADO (exclusion '{keyword}'): {product_name[:80]}")
+                return False
+
+        # [FIX 02/09] PC completo anunciado como "Computador/PC/Desktop <linha> - <specs
+        # internas>" (ex: "Computador BluePC Pro X - Intel Core i5 12400F, 32GB DDR5...").
+        # A marca/modelo do componente buscado não fica adjacente à palavra "Computador"/
+        # "PC" no título (o nome da linha do PC fica no meio), então nenhuma frase de
+        # EXCLUSION_KEYWORDS acima bate. Como nenhum componente avulso vendido nas lojas
+        # tem título começando com essas palavras (sempre começam com marca/modelo próprio),
+        # checar pela PRIMEIRA palavra do título resolve sem depender de adjacência.
+        # Pulada inteira para category == 'CASE': gabinetes legitimamente têm títulos como
+        # "PC Case ..." (Bug#6), e ali 'pc' não indica um sistema completo.
+        if category != 'CASE':
+            stripped = product_name_lower.strip()
+            first_word = stripped.split(maxsplit=1)[0].rstrip(':.,-') if stripped else ''
+            if first_word in FULL_PC_LEADING_WORDS:
+                print(f"  [MATCH] REJEITADO (PC completo, titulo inicia com '{first_word}'): {product_name[:80]}")
                 return False
 
         search_tokens = self.extract_key_tokens(search_model)

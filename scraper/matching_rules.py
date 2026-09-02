@@ -40,6 +40,19 @@ EXCLUSION_KEYWORDS = [
     'gaming pc', 'gaming desktop', 'gaming computer',
 ]
 
+# [FIX 02/09] PCs completos anunciados como "Computador/PC/Desktop <linha> - <specs>"
+# (ex: "Computador BluePC Pro X - Intel Core i5 12400F, 32GB DDR5...") escapavam de
+# EXCLUSION_KEYWORDS porque o nome da linha do PC (ex: "BluePC Pro X") fica entre a
+# palavra "Computador"/"PC" e a marca/modelo do componente interno, quebrando a
+# adjacência literal exigida pelas frases (ex: 'computador intel'). Nenhum componente
+# avulso vendido nas lojas tem título começando com essas palavras — títulos de
+# componente sempre começam com a marca/modelo do próprio componente. Usado em
+# matching.py como checagem pela PRIMEIRA palavra do título, não substring.
+# 'pc' incluído aqui, mas a checagem em matching.py é pulada inteira quando
+# category == 'CASE' (ver Bug#6 acima: "PC Case ..." é gabinete legítimo, e ali
+# 'pc' não indica sistema completo).
+FULL_PC_LEADING_WORDS = {'computador', 'desktop', 'pc'}
+
 # Sufixos que indicam PRODUTO DIFERENTE (não podem aparecer se não estão no modelo buscado)
 VARIANT_SUFFIXES = [
     'xt', 'ti', 'super', 'kf', 'f', 'ultra', 'max', 'pro',
