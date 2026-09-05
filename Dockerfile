@@ -1,4 +1,4 @@
-FROM python:3.9-slim-bullseye
+FROM python:3.9-slim-bookworm
 
 # Dependências de sistema + Chrome em um único bloco para reduzir camadas e
 # garantir que tudo é resolvido com um único `apt-get update`.
