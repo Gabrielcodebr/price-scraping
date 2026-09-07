@@ -4,7 +4,7 @@ import time
 
 from selenium.webdriver.common.by import By
 
-from ..matching_rules import EXCLUSION_KEYWORDS
+from ..matching_rules import EXCLUSION_KEYWORDS, CATEGORY_KEYWORDS
 
 # [FEATURE 01/09] Quantos candidatos extras (além do mais barato) cada site manda pra
 # price_scraper.py combinar. O corte final pros "5 no total" (Kabum + Amazon combinados)
@@ -161,6 +161,7 @@ class AmazonMixin:
         modelo = component.get('model')
         categoria = component.get('category')
         especificacoes = component.get('specifications')
+        ram_type = component.get('ram_type')
 
         print(f"\n[AMAZON] Buscando: {produto}")
         if modelo:
@@ -377,7 +378,7 @@ class AmazonMixin:
                 product_name = c["name"]
                 if modelo:
                     if self.is_exact_product_match(product_name, modelo, marca, search_name=produto,
-                                                    category=categoria, specifications=especificacoes):
+                                                    category=categoria, specifications=especificacoes, ram_type=ram_type):
                         valid_products.append(c)
                     else:
                         rejected_candidates.append(c)

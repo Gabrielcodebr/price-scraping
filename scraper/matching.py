@@ -249,7 +249,8 @@ class MatchingMixin:
         return key_tokens
 
     def is_exact_product_match(self, product_name, search_model, search_brand=None,
-                                search_name=None, category=None, specifications=None):
+                            search_name=None, category=None, specifications=None,
+                            ram_type=None):
         """
         Valida se o produto encontrado corresponde exatamente ao modelo buscado.
 
@@ -425,13 +426,16 @@ class MatchingMixin:
                     print(f"  [MATCH] REJEITADO (VRAM {vram_capacity}GB != {product_vram_capacity}GB): {product_name[:80]}")
                     return False
 
-        # [FIX Bug#10] Checar geração DDR quando o modelo é genérico (ex: "Vengeance", "Fury Beast").
-        # Sem isso, DDR4 e DDR5 do mesmo produto ficam intercambiáveis no matching.
-        # Só rejeita quando AMBOS têm DDR explícito (ou inferido pela velocidade — ver
-        # extract_ddr_type) e são diferentes.
-        search_ddr = self.extract_ddr_type(search_model)
-        if search_ddr is None and search_name:
-            search_ddr = self.extract_ddr_type(search_name)
+        # [FIX 07/09] Prioriza o campo `ram_type` do banco (fonte da verdade) sobre a
+        # extração textual — "Kingston Fury Beast 16GB" e afins não têm DDR nem
+        # velocidade escritos no nome/modelo, então não havia nada pra extract_ddr_type
+        # inferir e o check nunca rodava. Confirmado em produção: causava o alerta de
+        # store_mismatch no "Fury Beast 64GB" (Kabum DDR4 vs Amazon DDR5).
+        search_ddr = ram_type.lower() if ram_type else None
+        if search_ddr is None:
+            search_ddr = self.extract_ddr_type(search_model)
+            if search_ddr is None and search_name:
+                search_ddr = self.extract_ddr_type(search_name)
         product_ddr = self.extract_ddr_type(product_name)
         if search_ddr is not None and product_ddr is not None and search_ddr != product_ddr:
             print(f"  [MATCH] REJEITADO (tipo {search_ddr.upper()} != {product_ddr.upper()}): {product_name[:80]}")

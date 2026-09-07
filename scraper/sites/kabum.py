@@ -158,6 +158,7 @@ class KabumMixin:
         modelo = component.get('model')
         categoria = component.get('category')
         especificacoes = component.get('specifications')
+        ram_type = component.get('ram_type')
 
         print(f"\n[KABUM] Buscando: {produto}")
         if modelo:
@@ -460,7 +461,8 @@ class KabumMixin:
                 product_name = c["name"]
                 if modelo:
                     if self.is_exact_product_match(product_name, modelo, marca, search_name=produto,
-                                                    category=categoria, specifications=especificacoes):
+                                                    category=categoria, specifications=especificacoes,
+                                                    ram_type=ram_type):
                         valid_products.append(c)
                     else:
                         rejected_candidates.append(c)
