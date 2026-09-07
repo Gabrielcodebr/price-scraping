@@ -34,7 +34,7 @@ jobs:
     - name: Checkout código
       uses: actions/checkout@v4
     
-        - name: Criar arquivo .env
+    - name: Criar arquivo .env
       run: |
         echo "SUPABASE_URL=${{ secrets.SUPABASE_URL }}" > .env
         echo "SUPABASE_KEY=${{ secrets.SUPABASE_KEY }}" >> .env
