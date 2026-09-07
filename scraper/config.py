@@ -16,6 +16,11 @@ supabase: Client = create_client(
 
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 
+# [FEATURE 06/09] Filtro manual de categoria, setado só quando a run é disparada via
+# workflow_dispatch com uma categoria escolhida no dropdown do Actions. None/vazio =
+# comportamento de sempre, roda tudo (runs agendadas nunca setam isso).
+CATEGORY_FILTER = os.environ.get("CATEGORY_FILTER") or None
+
 
 # ---------------------------------------------------------------------------
 # MONITORAMENTO / ALERTAS

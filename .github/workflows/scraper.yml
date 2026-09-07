@@ -6,7 +6,23 @@ on:
     - cron: '0 9 1-31/2 * *'
   
   # Permite execução manual
+    # Permite execução manual, com filtro opcional por categoria
   workflow_dispatch:
+    inputs:
+      category:
+        description: 'Categoria (deixe "Todas" para rodar o scraper completo)'
+        required: false
+        default: 'Todas'
+        type: choice
+        options:
+          - Todas
+          - CPU
+          - GPU
+          - MOTHERBOARD
+          - PSU
+          - RAM
+          - STORAGE
+          - CASE
 jobs:
   scrape:
     runs-on: ubuntu-latest
@@ -18,11 +34,15 @@ jobs:
     - name: Checkout código
       uses: actions/checkout@v4
     
-    - name: Criar arquivo .env
+        - name: Criar arquivo .env
       run: |
         echo "SUPABASE_URL=${{ secrets.SUPABASE_URL }}" > .env
         echo "SUPABASE_KEY=${{ secrets.SUPABASE_KEY }}" >> .env
         echo "GROQ_API_KEY=${{ secrets.GROQ_API_KEY }}" >> .env
+        CATEGORY="${{ github.event.inputs.category }}"
+        if [ -n "$CATEGORY" ] && [ "$CATEGORY" != "Todas" ]; then
+          echo "CATEGORY_FILTER=$CATEGORY" >> .env
+        fi
     
     - name: Build e executar
       run: |

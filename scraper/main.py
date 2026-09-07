@@ -2,7 +2,7 @@ import random
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutTimeout
 
-from .config import supabase, MAX_RUNTIME_MINUTES, PER_COMPONENT_TIMEOUT_S
+from .config import supabase, MAX_RUNTIME_MINUTES, PER_COMPONENT_TIMEOUT_S, CATEGORY_FILTER
 from .price_scraper import PriceScraper
 from .database import update_component_prices, update_component_alt_prices
 from .alerts import record_run_health
@@ -91,12 +91,16 @@ def main():
 
     try:
         # Ordena pelos mais antigos primeiro — nunca atualizados (null) têm prioridade máxima
-        response = (
+        query = (
             supabase.table("components")
             .select("*")
             .order("best_price->>updated_at", desc=False, nullsfirst=True)
-            .execute()
         )
+        if CATEGORY_FILTER:
+            print(f"Filtro de categoria ativo: {CATEGORY_FILTER}")
+            query = query.eq("category", CATEGORY_FILTER)
+
+        response = query.execute()
         components = response.data
 
         if not components:
