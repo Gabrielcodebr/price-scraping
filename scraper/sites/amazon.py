@@ -390,19 +390,34 @@ class AmazonMixin:
                     else:
                         rejected_candidates.append(c)
 
-            # Fallback groq: só se matching normal falhou completamente
+                        # Fallback groq: só se matching normal falhou completamente
             # Produtos excluídos por keyword (kit, laptop, etc.) nunca vão ao Groq
             if not valid_products and rejected_candidates and modelo:
-                groq_candidates = [
+                base_groq_candidates = [
                     c for c in rejected_candidates
                     if not any(kw in c["name"].lower() for kw in EXCLUSION_KEYWORDS)
                 ]
+                # [FIX 06/09] Filtro leve por categoria antes do top-3 por preço — evita
+                # itens de categoria obviamente errada (ex: SmartWatch, peça de robô
+                # aspirador) entrarem no fallback só por coincidência de número no nome.
+                # Se zerar tudo, volta pra lista sem filtro — nunca bloqueia um match que
+                # já funcionava antes desse fix.
+                category_kw = CATEGORY_KEYWORDS.get(categoria)
+                if category_kw:
+                    filtered = [
+                        c for c in base_groq_candidates
+                        if any(kw in c["name"].lower() for kw in category_kw)
+                    ]
+                    groq_candidates = filtered if filtered else base_groq_candidates
+                else:
+                    groq_candidates = base_groq_candidates
+
                 groq_candidates.sort(key=lambda x: x["price"])
                 if groq_candidates:
                     meta["llm_used"] = True
                     print(f"[AMAZON] Matching normal: 0 resultados. Tentando LLM nos {min(3, len(groq_candidates))} candidatos mais baratos...")
                     for c in groq_candidates[:3]:
-                        if self.ask_groq_is_match(c["name"], produto, modelo):
+                        if self.ask_groq_is_match(c["name"], produto, modelo, categoria):
                             valid_products.append(c)
                             meta["llm_confirmed"] = True
                             break

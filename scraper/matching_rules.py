@@ -38,6 +38,13 @@ EXCLUSION_KEYWORDS = [
     # não é uma solução geral para ordem de palavras arbitrária, então pode continuar
     # havendo variações que escapem (ex: "Computador Gaming", "PC para Jogos").
     'gaming pc', 'gaming desktop', 'gaming computer',
+    # [FIX 06/09] Linhas de PC completo de marcas OEM (Dell, HP, Lenovo, Acer). Esses
+    # anúncios não começam com "Computador"/"PC"/"Desktop" (começam com o nome da marca:
+    # "Dell OptiPlex...", "HP EliteDesk..."), então escapavam de FULL_PC_LEADING_WORDS.
+    # Caso real observado em produção: busca por "Intel Ultra 9-285K" retornou um
+    # "Dell OptiPlex" completo que citava o processador nas specs internas.
+    'optiplex', 'elitedesk', 'prodesk', 'thinkcentre', 'thinkstation',
+    'inspiron', 'vostro', 'veriton', 'pavilion',
 ]
 
 # [FIX 02/09] PCs completos anunciados como "Computador/PC/Desktop <linha> - <specs>"
@@ -59,6 +66,11 @@ VARIANT_SUFFIXES = [
     'plus', 'boost', 'overclocked', 'turbo', 'extreme', 'premium',
     'x3d', '3d', 's', 'g', 'x',  # 'x' adicionado para cobrir 7600X, 5800X, etc.
     'i',  # 'i' para distinguir HX1200 de HX1200i (versão com monitoramento digital iCUE)
+    # [FIX 06/09] 'k' estava ausente — permitia que uma busca sem "K" (ex: "265")
+    # aceitasse um "265K" da loja como se fosse o mesmo produto. Intel K-series e não-K
+    # são CPUs diferentes (preço, TDP, multiplicador destravado). Mesma lógica do 'kf'/'f'
+    # acima, só que pro "K" sozinho.
+    'k',
 ]
 
 # Palavras genéricas que podem aparecer sem problema (são apenas marketing/descrição)
@@ -108,3 +120,21 @@ KNOWN_STORAGE_CAPACITIES_GB = {
 # significativa com a safelist de storage — usar a mesma lista simplesmente não teria o "8"
 # nela (list pensada pra SSD/HD) e rejeitava o produto certo por falso negativo de capacidade.
 KNOWN_VRAM_CAPACITIES_GB = {1, 2, 3, 4, 6, 8, 10, 11, 12, 16, 20, 24, 32, 48}
+
+KNOWN_VRAM_CAPACITIES_GB = {1, 2, 3, 4, 6, 8, 10, 11, 12, 16, 20, 24, 32, 48}
+
+# [FEATURE 06/09] Palavra(s) que costumam aparecer no título de cada categoria nas duas
+# lojas (Kabum/Amazon), usada só como filtro leve ANTES de mandar candidatos pro fallback
+# Groq — reduz casos como um SmartWatch ou peça de robô aspirador entrarem no top-3 mais
+# barato só por coincidência de número no nome. Se o filtro zerar todos os candidatos
+# (ex: formato de título inesperado), o código volta a usar a lista sem filtro — nunca
+# bloqueia um match que já funcionava antes desse fix.
+CATEGORY_KEYWORDS = {
+    'CPU': ['processador'],
+    'GPU': ['placa de vídeo', 'placa de video'],
+    'RAM': ['memória ram', 'memoria ram'],
+    'MOTHERBOARD': ['placa-mãe', 'placa mãe', 'placa-mae', 'placa mae'],
+    'PSU': ['fonte'],
+    'STORAGE': ['ssd', 'hd ', 'hdd'],
+    'CASE': ['gabinete'],
+}

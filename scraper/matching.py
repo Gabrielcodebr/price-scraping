@@ -22,7 +22,7 @@ class MatchingMixin:
     principal em is_exact_product_match, e o fallback via LLM em ask_groq_is_match).
     """
 
-    def ask_groq_is_match(self, product_name, component_name, model):
+    def ask_groq_is_match(self, product_name, component_name, model, category=None):
         """
         Usa Groq (openai/gpt-oss-120b) como segunda opinião quando is_exact_product_match rejeita.
         Retorna True se o LLM confirma que é o mesmo produto, False caso contrário
@@ -35,6 +35,14 @@ class MatchingMixin:
         Por consumir mais tokens por chamada que o modelo antigo (llama-3.3-70b-versatile,
         descontinuado pelo Groq em 16/08/2026), o TPM (8.000/min) tende a ser o limite mais
         provável de bater antes do RPM — daí o intervalo de 2.5s abaixo (era 2s).
+
+        [FIX 06/09] Parâmetro `category` adicionado. Motivo: sem informar a categoria do
+        componente buscado, o LLM não tinha sinal explícito de que o produto encontrado
+        podia ser de um TIPO diferente (acessório/periférico) em vez de "mesma categoria,
+        modelo diferente" (único caso de categoria já coberto nas regras). Caso real
+        observado em produção: buscando "NZXT N9 X870E" (placa-mãe), o fallback confirmou
+        como match um "Hub de controle NZXT" (acessório RGB/PWM) — mesma marca, nenhuma
+        das regras antigas cobria "isso nem é o tipo de produto buscado".
         """
         if not GROQ_API_KEY:
             return False
@@ -53,18 +61,27 @@ class MatchingMixin:
                 print(f"[LLM] Rate limiter — aguardando {wait:.1f}s")
                 time.sleep(wait)
 
+        # [FIX 06/09] Linha de categoria só entra no prompt quando fornecida — chamadas
+        # antigas (sem o argumento) continuam funcionando exatamente como antes.
+        category_line = f'Categoria do produto buscado: {category}\n' if category else ''
+
         prompt = (
             f'Você é especialista em hardware de computador. '
             f'Decida se estes dois itens são EXATAMENTE o mesmo produto.\n\n'
             f'Produto buscado: "{component_name}" (modelo: {model})\n'
+            f'{category_line}'
             f'Produto encontrado na loja: "{product_name}"\n\n'
             f'REGRAS OBRIGATÓRIAS — responda NÃO se qualquer uma for verdade:\n'
             f'- As marcas são diferentes (ex: XPG vs C3Tech, Corsair vs Redragon)\n'
             f'- O modelo é diferente (ex: Pylon vs Kyber, Core Reactor vs PS-G850)\n'
-            f'- É apenas um produto similar da mesma categoria (ex: outra fonte 550W)\n\n'
+            f'- É apenas um produto similar da mesma categoria (ex: outra fonte 550W)\n'
+            f'- O produto encontrado é um acessório, periférico, hub, controlador, cabo, '
+            f'suporte, peça de reposição, ou de categoria diferente do produto buscado '
+            f'(ex: buscando uma placa-mãe e encontrando um hub de controle RGB da mesma '
+            f'marca — isso é NÃO, mesmo sendo a marca certa)\n\n'
             f'Responda APENAS com SIM ou NÃO, sem mais texto.\n'
             f'SIM = definitivamente o mesmo produto, com nome abreviado ou variante\n'
-            f'NÃO = produto diferente, marca diferente, ou modelo diferente'
+            f'NÃO = produto diferente, marca diferente, modelo diferente, ou categoria/tipo diferente'
         )
 
         url = "https://api.groq.com/openai/v1/chat/completions"
@@ -108,11 +125,37 @@ class MatchingMixin:
             return False
 
     def extract_ddr_type(self, text):
-        """Extrai tipo DDR do texto (ddr3, ddr4, ddr5). Usado para evitar confundir gerações."""
+        """
+        Extrai tipo DDR do texto (ddr3, ddr4, ddr5). Usado para evitar confundir gerações.
+
+        [FIX 06/09] Fallback HEURÍSTICO: quando o texto não tem "ddr3/4/5" escrito por
+        extenso, tenta inferir pela velocidade em MHz/MT/s. DDR5 comercial começa perto de
+        4800MHz; abaixo disso (e acima de ~1600MHz, piso realista de DDR3/4) é tratado como
+        DDR4. Isso é um sinal auxiliar, não uma certeza — pode haver kits de fronteira
+        (DDR4 XMP a 4400-4600MHz vs DDR5 base a 4800MHz) que escapem da regra. Motivação:
+        caso observado no relatório de monitoramento com forte divergência de preço entre
+        lojas num "Kingston Fury Beast" (linha vendida em DDR4 e DDR5), onde o anúncio da
+        loja descrevia só a velocidade, sem escrever "DDR5"/"DDR4" por extenso — sem esse
+        fallback, a checagem de DDR simplesmente não rodava e um kit da geração errada
+        podia passar como match.
+        """
         if not text:
             return None
-        match = re.search(r'\bddr(\d)\b', text.lower())
-        return f"ddr{match.group(1)}" if match else None
+
+        text_lower = text.lower()
+        match = re.search(r'\bddr(\d)\b', text_lower)
+        if match:
+            return f"ddr{match.group(1)}"
+
+        speed_match = re.search(r'(\d{3,5})\s*(?:mhz|mt/?s)\b', text_lower)
+        if speed_match:
+            speed = int(speed_match.group(1))
+            if speed >= 4800:
+                return "ddr5"
+            if speed >= 1600:
+                return "ddr4"
+
+        return None
 
     def extract_storage_capacity(self, text, extra_known_capacities=None):
         """
@@ -361,7 +404,7 @@ class MatchingMixin:
                 print(f"  [MATCH] REJEITADO (capacidade {search_capacity}GB != {product_capacity}GB): {product_name[:80]}")
                 return False
 
-        # [MONITORING/FIX] Checagem de VRAM para GPUs: model/name normalmente não trazem a
+        # [MONITORING/FIX] Checagem de VRAM para GPUs: model/name normalmente NÃO trazem a
         # capacidade (ex: "GeForce RTX 3060" não diz se é a versão 8GB ou 12GB), então a
         # capacidade de referência vem do campo specifications.memory cadastrado no
         # componente. Sem isso, uma RTX 3060 12GB e uma RTX 3060 8GB (produtos diferentes,
@@ -384,7 +427,8 @@ class MatchingMixin:
 
         # [FIX Bug#10] Checar geração DDR quando o modelo é genérico (ex: "Vengeance", "Fury Beast").
         # Sem isso, DDR4 e DDR5 do mesmo produto ficam intercambiáveis no matching.
-        # Só rejeita quando AMBOS têm DDR explícito e são diferentes.
+        # Só rejeita quando AMBOS têm DDR explícito (ou inferido pela velocidade — ver
+        # extract_ddr_type) e são diferentes.
         search_ddr = self.extract_ddr_type(search_model)
         if search_ddr is None and search_name:
             search_ddr = self.extract_ddr_type(search_name)
