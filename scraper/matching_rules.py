@@ -71,6 +71,7 @@ VARIANT_SUFFIXES = [
     # são CPUs diferentes (preço, TDP, multiplicador destravado). Mesma lógica do 'kf'/'f'
     # acima, só que pro "K" sozinho.
     'k',
+    't', # distingue 5600X de 5600XT, 5600G de 5600GT e 5600 de 5600T
 ]
 
 # Palavras genéricas que podem aparecer sem problema (são apenas marketing/descrição)
